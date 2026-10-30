@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#07060f">
+<title>Cyberpunk 2077 — Мод-Аудитор</title>
+<style>
+    :root {
+        --bg-main: #0b0e14;
+        --bg-card: #121721;
+        --bg-head: #171e2c;
+        --border-color: #242c3d;
+        --text-main: #c3ccdc;
+        --text-bright: #ffffff;
+        --text-dim: #7a879e;
+        --accent-yellow: #fcee0a;
+        --accent-cyan: #00f0ff;
+        --accent-red: #ff003c;
+        --accent-green: #2bd67b;
+        --accent-purple: #b388ff;
+        --font-mono: "JetBrains Mono", Consolas, "Courier New", monospace;
+        --font-ui: "Segoe UI", system-ui, -apple-system, sans-serif;
+        --chamfer: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+        --chamfer-sm: polygon(0 0, calc(100% - 5px) 0, 100% 5px, 100% 100%, 5px 100%, 0 calc(100% - 5px));
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+        background: var(--bg-main);
+        color: var(--text-main);
+        font-family: var(--font-ui);
+        line-height: 1.5;
+        padding: 24px;
+    }
+    :focus-visible { outline: 2px solid var(--accent-cyan); outline-offset: 2px; }
+
+    /* Шапка */
+    h1 {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: var(--accent-yellow);
+        font-family: var(--font-mono);
+        font-size: 26px;
+        font-weight: 700;
+        margin-bottom: 4px;
+    }
+    h1::before {
+        content: "";
+        width: 12px;
+        height: 28px;
+        background: var(--accent-yellow);
+        clip-path: polygon(0 0, 100% 0, 100% 70%, 60% 100%, 0 100%);
+    }
+    .subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 18px; font-family: var(--font-mono); }
+
+    /* Виджет занятого места */
+    .disk {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 2px;
+        padding: 16px 18px 18px;
+        margin-bottom: 20px;
+    }
+    .disk-figures { display: flex; flex-wrap: wrap; gap: 8px 40px; margin-bottom: 14px; }
+    .fig-val { font-family: var(--font-mono); font-size: 26px; font-weight: 700; line-height: 1.1; }
+    .fig-cap { font-size: 12px; color: var(--text-dim); }
+    .fig-c { color: var(--accent-yellow); }
+    .fig-d { color: var(--accent-cyan); }
+    .fig-dup { color: var(--accent-red); }
+    .disk-bar {
+        display: flex;
+        height: 14px;
+        background: var(--bg-main);
+        border: 1px solid var(--border-color);
+        clip-path: polygon(0 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
+    }
+    .seg { display: block; height: 100%; width: 0; transition: width 0.9s cubic-bezier(.2,.7,.2,1); }
+    .seg-keep { background: var(--accent-yellow); }
+    .seg-dup { background: repeating-linear-gradient(135deg, var(--accent-red) 0 4px, #7a0a22 4px 8px); }
+    .seg-vx { background: var(--accent-cyan); }
+
+    /* Core Frameworks */
+    .core-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 10px;
+        margin-bottom: 20px;
+    }
+    .core-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 2px;
+        padding: 10px 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .core-ok { border-left: 4px solid var(--accent-green); }
+    .core-missing { border-left: 4px solid var(--accent-red); }
+    .core-icon { font-size: 16px; font-weight: bold; }
+    .core-ok .core-icon { color: var(--accent-green); }
+    .core-missing .core-icon { color: var(--accent-red); }
+    .core-name { font-size: 12px; font-weight: 600; color: var(--text-bright); }
+    .core-val { font-size: 10px; color: var(--text-dim); }
+
+    /* Панель управления */
+    .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+        background: var(--bg-card);
+        padding: 12px 16px;
+        border-radius: 2px;
+        border: 1px solid var(--border-color);
+    }
+    .search-input {
+        width: 320px;
+        max-width: 100%;
+        background: var(--bg-main);
+        border: 1px solid var(--border-color);
+        color: var(--text-bright);
+        padding: 7px 12px;
+        border-radius: 2px;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        outline: none;
+        transition: border-color .15s, box-shadow .15s;
+    }
+    .search-input:focus { border-color: var(--accent-cyan); box-shadow: 0 0 0 1px var(--accent-cyan); }
+    .filter-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* Кнопки со скошенными углами */
+    .btn, .btn-delete, .btn-reveal {
+        font-family: var(--font-ui);
+        font-size: 12px;
+        font-weight: 600;
+        padding: 7px 14px;
+        border: 0;
+        cursor: pointer;
+        clip-path: var(--chamfer);
+        transition: background .15s, color .15s, box-shadow .15s;
+    }
+    .btn {
+        background: rgba(0, 240, 255, 0.08);
+        color: var(--text-main);
+        box-shadow: inset 2px 0 0 var(--accent-cyan);
+    }
+    .btn:hover { background: rgba(0, 240, 255, 0.2); color: var(--text-bright); }
+    .btn.active { background: var(--accent-yellow); color: #000; font-weight: 700; box-shadow: inset 2px 0 0 #000; }
+    .btn-delete {
+        background: rgba(255, 0, 60, 0.16);
+        color: #ff4d73;
+        box-shadow: inset 2px 0 0 var(--accent-red);
+    }
+    .btn-delete:hover:not(:disabled) { background: var(--accent-red); color: #fff; }
+    .btn-delete:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* Баннер очистки дубликатов */
+    .dup-banner {
+        display: none;
+        background: rgba(252, 238, 10, 0.06);
+        border: 1px solid rgba(252, 238, 10, 0.3);
+        border-radius: 2px;
+        padding: 12px 16px;
+        margin-bottom: 16px;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px 16px;
+    }
+    .dup-banner-text { font-size: 13px; color: var(--text-bright); flex: 1 1 360px; }
+    .savings-pill {
+        background: var(--accent-yellow);
+        color: #000;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        font-weight: 700;
+        padding: 6px 16px;
+        clip-path: var(--chamfer);
+    }
+    .dup-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+    /* Таблица с ресайзом колонок */
+    .table-container {
+        overflow-x: auto;
+        border: 1px solid var(--border-color);
+        border-radius: 2px;
+        background: var(--bg-card);
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        text-align: left;
+        table-layout: fixed;
+    }
+    th {
+        background: var(--bg-head);
+        color: var(--text-bright);
+        padding: 10px 18px 10px 12px;
+        border-bottom: 1px solid var(--border-color);
+        position: relative;
+        white-space: nowrap;
+        user-select: none;
+        transition: color .15s;
+    }
+    th[data-sort] { cursor: pointer; }
+    th[data-sort]:hover { color: var(--accent-cyan); }
+    th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--accent-yellow); }
+    .sort-arrow { font-size: 10px; margin-left: 6px; color: var(--accent-yellow); }
+    .col-resizer {
+        position: absolute;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        width: 6px;
+        cursor: col-resize;
+        user-select: none;
+    }
+    .col-resizer:hover, .col-resizer.resizing { background: var(--accent-cyan); }
+
+    td {
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border-color);
+        vertical-align: top;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    td:nth-child(2) { font-family: var(--font-mono); }
+    tr:hover td { background: rgba(0, 240, 255, 0.035); }
+    tr:hover td:first-child { box-shadow: inset 2px 0 0 var(--accent-yellow); }
+
+    /* Бейджи и метки */
+    .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 2px;
+        font-size: 11px;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    .badge-dup { background: rgba(252, 238, 10, 0.14); color: var(--accent-yellow); border: 1px solid rgba(252, 238, 10, 0.4); }
+    .badge-old { background: rgba(0, 240, 255, 0.12); color: var(--accent-cyan); border: 1px solid rgba(0, 240, 255, 0.4); }
+    .badge-update { background: rgba(43, 214, 123, 0.14); color: var(--accent-green); border: 1px solid rgba(43, 214, 123, 0.4); }
+    .badge-danger { background: rgba(255, 0, 60, 0.15); color: #ff4d73; border: 1px solid rgba(255, 0, 60, 0.5); }
+    .badge-vortex { background: rgba(0, 240, 255, 0.12); color: var(--accent-cyan); border: 1px solid rgba(0, 240, 255, 0.3); }
+    .badge-local { background: rgba(179, 136, 255, 0.14); color: var(--accent-purple); border: 1px solid rgba(179, 136, 255, 0.3); }
+
+    .chip {
+        display: inline-block;
+        font-size: 10px;
+        padding: 1px 5px;
+        border-radius: 2px;
+        margin-left: 4px;
+        font-weight: 600;
+    }
+    .chip-dup { background: rgba(252, 238, 10, 0.2); color: var(--accent-yellow); }
+    .chip-old { background: rgba(0, 240, 255, 0.18); color: var(--accent-cyan); }
+    .chip-new { background: rgba(43, 214, 123, 0.2); color: var(--accent-green); }
+    .chip-stale { background: rgba(255, 0, 60, 0.2); color: #ff4d73; }
+
+    a.nexus-link {
+        display: inline-block;
+        color: var(--accent-yellow);
+        text-decoration: none;
+        font-weight: 600;
+        padding: 2px 8px;
+        background: rgba(252, 238, 10, 0.1);
+        clip-path: var(--chamfer-sm);
+        transition: background .15s, color .15s;
+    }
+    a.nexus-link:hover { background: var(--accent-yellow); color: #000; }
+    a.search-link { color: var(--accent-cyan); text-decoration: none; }
+    a.search-link:hover { text-decoration: underline; }
+
+    /* Элементы списка файлов */
+    .file-item {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin: 4px 0;
+        background: rgba(0, 0, 0, 0.28);
+        padding: 4px 6px;
+        border-radius: 2px;
+    }
+    .file-name {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--text-dim);
+        word-break: break-all;
+    }
+    .file-size { font-family: var(--font-mono); font-size: 11px; color: #5d6b84; margin-left: auto; }
+    .file-note { width: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+    .btn-copy, .btn-reveal {
+        font-size: 10px;
+        padding: 3px 8px;
+        white-space: nowrap;
+        clip-path: var(--chamfer-sm);
+    }
+    .btn-copy {
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text-dim);
+        border: 0;
+        cursor: pointer;
+        font-weight: 600;
+        transition: background .15s, color .15s;
+    }
+    .btn-copy:hover { background: rgba(255, 255, 255, 0.12); color: var(--text-bright); }
+    .btn-reveal { background: rgba(0, 240, 255, 0.12); color: var(--accent-cyan); }
+    .btn-reveal:hover { background: var(--accent-cyan); color: #000; }
+    .btn-ok { color: var(--accent-green) !important; }
+    .btn-err { color: var(--accent-red) !important; }
+    .empty-val { color: #3b465c; }
+
+    /* Уведомление */
+    .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        max-width: 420px;
+        background: var(--bg-head);
+        color: var(--text-bright);
+        font-size: 13px;
+        padding: 12px 18px;
+        box-shadow: inset 3px 0 0 var(--accent-cyan);
+        clip-path: var(--chamfer);
+        opacity: 0;
+        transform: translateY(8px);
+        pointer-events: none;
+        transition: opacity .2s, transform .2s;
+        z-index: 10;
+    }
+    .toast.show { opacity: 1; transform: none; }
+    .toast.err { box-shadow: inset 3px 0 0 var(--accent-red); }
+
+    @media (max-width: 720px) {
+        body { padding: 14px; }
+        h1 { font-size: 20px; }
+        .search-input { width: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        * { transition: none !important; }
+    }
+
+/* ===== CYBERPUNK LAYER ===== */
+:root{--bg-main:#07060f;--bg-card:rgba(13,11,27,.84);--bg-head:#17133a;--border-color:#2b2550;--text-main:#cfcbf0;--text-dim:#8f8ab8;
+--font-display:"Bahnschrift SemiBold Condensed","Bahnschrift","Arial Narrow",Impact,sans-serif;--font-ui:"Bahnschrift","Segoe UI",system-ui,sans-serif;--font-mono:"Cascadia Mono","JetBrains Mono",Consolas,monospace;color-scheme:dark}
+html{scrollbar-color:var(--accent-cyan) var(--bg-main)}
+::selection{background:var(--accent-yellow);color:#000}
+:focus-visible{outline:2px solid var(--accent-yellow);outline-offset:2px}
+body{padding-top:0;min-height:100vh;font-variant-numeric:tabular-nums;
+background:radial-gradient(900px 420px at 88% 0,rgba(255,0,60,.13),transparent 60%),radial-gradient(800px 500px at 0 35%,rgba(0,240,255,.08),transparent 60%),linear-gradient(rgba(0,240,255,.035) 1px,transparent 1px) 0 0/44px 44px,linear-gradient(90deg,rgba(0,240,255,.035) 1px,transparent 1px) 0 0/44px 44px,var(--bg-main)}
+/* шапка с городом */
+.hero{position:relative;height:clamp(250px,34vw,330px);margin:0 -24px;overflow:hidden;border-bottom:2px solid var(--accent-cyan);
+background:radial-gradient(60% 90% at 68% 100%,rgba(255,0,110,.55),transparent 70%),linear-gradient(#05030d 0,#160a33 55%,#3a0b52 82%,#7a1250 100%)}
+.hero::after{content:"";position:absolute;inset:auto 0 0;height:70px;background:linear-gradient(transparent,rgba(0,240,255,.16));pointer-events:none}
+.sun{position:absolute;left:68%;bottom:-20%;width:min(46vw,380px);aspect-ratio:1;border-radius:50%;transform:translateX(-50%);background:linear-gradient(#fcee0a,#ff2b6a 60%,#b100ff);
+-webkit-mask:linear-gradient(#000 0 45%,transparent 45% 47%,#000 47% 62%,transparent 62% 65%,#000 65% 76%,transparent 76% 80%,#000 80% 88%,transparent 88% 93%,#000 93%);mask:linear-gradient(#000 0 45%,transparent 45% 47%,#000 47% 62%,transparent 62% 65%,#000 65% 76%,transparent 76% 80%,#000 80% 88%,transparent 88% 93%,#000 93%);opacity:.9}
+.sky{position:absolute;left:0;bottom:0;width:100%;height:78%}
+.sky .l1{fill:#33155f;opacity:.75}.sky .l2{fill:#1a0b3d}.sky .l3{fill:#0b061b}
+.sky .w1{fill:#ff2bd6}.sky .w2{fill:#00f0ff}.sky .w3{fill:#fcee0a}.sky .wl2{opacity:.5}.sky .wl3{opacity:.9}
+.sky .n1{fill:#00f0ff;filter:drop-shadow(0 0 4px #00f0ff)}.sky .n2{fill:#ff2bd6;filter:drop-shadow(0 0 4px #ff2bd6)}.sky .n3{fill:#fcee0a;filter:drop-shadow(0 0 4px #fcee0a)}
+.sky .fl{animation:flick 3.4s steps(1) infinite}.sky .beacon{fill:#ff003c;animation:blink 1.6s steps(2) infinite}
+@keyframes blink{50%{opacity:.12}}
+@keyframes flick{0%,90%,100%{opacity:1}92%{opacity:.15}95%{opacity:1}97%{opacity:.3}}
+.car{position:absolute;left:-80px;top:30%;width:26px;height:4px;border-radius:2px;background:#fff;box-shadow:-12px 0 14px 2px #ff003c,0 0 8px #fff;animation:fly 12s linear infinite}
+.car.b{top:47%;width:16px;height:3px;opacity:.85;box-shadow:12px 0 12px 2px #00f0ff;animation-duration:19s;animation-delay:-7s;animation-direction:reverse}
+@keyframes fly{to{transform:translateX(calc(100vw + 160px))}}
+.hero-bar{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;gap:12px;padding:10px 24px;font:600 11px var(--font-mono);letter-spacing:.14em;color:var(--accent-cyan);background:linear-gradient(rgba(0,0,0,.6),transparent);text-shadow:0 0 6px currentColor}
+.hero-bar b{color:var(--accent-yellow)}
+.hero-text{position:absolute;left:24px;right:24px;top:46px}
+.hero h1{font-family:var(--font-display);font-size:clamp(34px,7vw,64px);line-height:1;letter-spacing:.03em;flex-wrap:wrap;margin:0 0 10px;text-wrap:balance;text-shadow:0 0 18px rgba(252,238,10,.45)}
+.hero h1::before{width:.22em;height:.9em}
+.hero h1 small{align-self:flex-end;padding-bottom:.25em;font-size:.36em;letter-spacing:.22em;text-transform:uppercase;color:var(--accent-cyan);text-shadow:0 0 10px rgba(0,240,255,.8)}
+.hero .subtitle{margin:0;max-width:64ch;color:#ecd0ff;text-shadow:0 1px 6px #000,0 0 14px #000}
+/* глитч заголовка */
+.glitch{position:relative;display:inline-block;animation:gj 3.2s infinite steps(1)}
+.glitch::before,.glitch::after{content:attr(data-text);content:attr(data-text)/"";position:absolute;inset:0;pointer-events:none}
+.glitch::before{color:var(--accent-cyan);clip-path:inset(0 0 100% 0);animation:gl1 3.2s infinite steps(1)}
+.glitch::after{color:var(--accent-red);clip-path:inset(100% 0 0 0);animation:gl2 2.7s infinite steps(1)}
+@keyframes gj{0%,86%,100%{transform:none}88%{transform:skewX(-8deg)}91%{transform:skewX(5deg) translateX(2px)}}
+@keyframes gl1{0%,86%,100%{clip-path:inset(0 0 100% 0);transform:none}87%{clip-path:inset(10% 0 55% 0);transform:translate(-6px,0)}90%{clip-path:inset(60% 0 8% 0);transform:translate(5px,0)}93%{clip-path:inset(30% 0 40% 0);transform:translate(-3px,1px)}}
+@keyframes gl2{0%,78%,100%{clip-path:inset(100% 0 0 0);transform:none}80%{clip-path:inset(50% 0 20% 0);transform:translate(6px,0)}83%{clip-path:inset(5% 0 70% 0);transform:translate(-5px,0)}}
+/* бегущая строка с данными */
+.ticker{overflow:hidden;white-space:nowrap;margin:0 -24px 20px;background:#0a0720;border-bottom:1px solid var(--border-color);font:600 11px/26px var(--font-mono);letter-spacing:.14em;color:var(--accent-yellow)}
+.ticker-in{display:inline-block;padding-left:100%;animation:mq 45s linear infinite}
+@keyframes mq{to{transform:translateX(-100%)}}
+/* сканлайны, луч, виньетка, HUD-углы экрана */
+.fx i{position:fixed;display:block;pointer-events:none;z-index:60;font-style:normal}
+.fx-scan{inset:0;background:repeating-linear-gradient(0deg,rgba(0,0,0,.32) 0 1px,transparent 1px 3px);mix-blend-mode:multiply}
+.fx-beam{left:0;right:0;top:0;height:120px;background:linear-gradient(transparent,rgba(0,240,255,.08) 50%,transparent);animation:beam 7s linear infinite}
+@keyframes beam{from{transform:translateY(-130px)}to{transform:translateY(100vh)}}
+.fx-vig{inset:0;background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.55))}
+.hc{font:600 9px/12px var(--font-mono);letter-spacing:.16em;color:var(--accent-cyan);opacity:.85;white-space:nowrap;text-shadow:0 0 6px currentColor}
+.hc::before{content:"";position:absolute;width:26px;height:26px;border:solid currentColor;filter:drop-shadow(0 0 3px currentColor)}
+.tl{top:8px;left:8px;padding:2px 0 0 36px}.tl::before{top:0;left:0;border-width:2px 0 0 2px}
+.tr{top:8px;right:8px;padding:2px 36px 0 0}.tr::before{top:0;right:0;border-width:2px 2px 0 0}
+.bl{bottom:8px;left:8px;padding:0 0 2px 36px}.bl::before{bottom:0;left:0;border-width:0 0 2px 2px}
+.br{bottom:8px;right:8px;padding:0 36px 2px 0;color:var(--accent-yellow)}.br::before{bottom:0;right:0;border-width:0 2px 2px 0}
+/* HUD-рамки панелей */
+.disk,.toolbar,.table-container,.dup-banner{--br:linear-gradient(var(--accent-cyan),var(--accent-cyan));position:relative;border-color:rgba(0,240,255,.22);
+background:var(--br) 0 0/18px 2px no-repeat,var(--br) 0 0/2px 18px no-repeat,var(--br) 100% 0/18px 2px no-repeat,var(--br) 100% 0/2px 18px no-repeat,var(--br) 0 100%/18px 2px no-repeat,var(--br) 0 100%/2px 18px no-repeat,var(--br) 100% 100%/18px 2px no-repeat,var(--br) 100% 100%/2px 18px no-repeat,var(--bg-card)}
+.dup-banner{--br:linear-gradient(var(--accent-yellow),var(--accent-yellow));border-color:rgba(252,238,10,.35)}
+.disk::after,.toolbar::after{position:absolute;top:-7px;right:16px;padding:0 6px;background:var(--bg-main);font:600 10px/12px var(--font-mono);letter-spacing:.18em;color:var(--accent-cyan)}
+.disk::after{content:"// STORAGE SCAN"}.toolbar::after{content:"// QUERY"}
+.fig-val{font-family:var(--font-display);font-size:clamp(26px,4vw,38px);letter-spacing:.02em;text-shadow:0 0 14px currentColor}
+.disk-bar{position:relative;height:16px}
+.disk-bar::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(90deg,transparent 0 calc(5% - 2px),var(--bg-main) calc(5% - 2px) 5%)}
+.core-card{clip-path:var(--chamfer);box-shadow:inset 0 0 18px rgba(0,240,255,.06)}
+.core-icon{text-shadow:0 0 8px currentColor}.core-missing .core-icon{animation:blink 1.2s steps(2) infinite}
+th{font:600 11px var(--font-mono);letter-spacing:.12em;text-transform:uppercase;border-bottom:2px solid var(--accent-cyan);background:linear-gradient(var(--bg-head),#0f0c24)}
+td{border-bottom-color:rgba(43,37,80,.8)}
+tbody tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+tbody tr:hover td{background:rgba(0,240,255,.08)}
+.badge,.chip{font-family:var(--font-mono);letter-spacing:.04em;text-shadow:0 0 6px currentColor}
+.btn,.btn-delete{text-transform:uppercase;letter-spacing:.06em}
+.search-input{border-color:rgba(0,240,255,.5);caret-color:var(--accent-yellow)}.search-input::placeholder{color:#6f6a99}
+.toast{background:#17133a;z-index:70}
+/* загрузка */
+.boot{position:fixed;inset:0;z-index:100;display:grid;place-content:center;background:#030208;color:var(--accent-cyan);font:13px/1.9 var(--font-mono);transition:opacity .45s,visibility .45s}
+.boot pre{font:inherit}.boot b{color:var(--accent-yellow)}.boot.off{opacity:0;visibility:hidden}
+@media (max-width:720px){.hero{margin:0 -14px}.ticker{margin:0 -14px 16px}.hero-bar{padding:10px 14px}.hero-text{left:14px;right:14px}.fx .bl,.fx .br{display:none}.sun{left:62%}}
+@media (prefers-reduced-motion:reduce){.fx-beam,.car,.sky .fl,.sky .beacon,.glitch,.core-icon{animation:none!important}.glitch::before,.glitch::after{display:none}.ticker-in{animation:none;padding-left:14px}}
+
+/* ИИ-подсказки (OpenRouter) */
+.ai-note{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;margin-top:5px;font-size:11px;line-height:1.4}
+.ai-mark{font:700 9px/1 var(--font-mono);letter-spacing:.08em;padding:2px 4px;color:var(--accent-purple);background:rgba(179,136,255,.12);border:1px solid rgba(179,136,255,.4);clip-path:var(--chamfer-sm);text-shadow:0 0 6px currentColor;cursor:help}
+.ai-high .ai-mark{color:var(--accent-green);background:rgba(43,214,123,.12);border-color:rgba(43,214,123,.4)}
+.ai-low .ai-mark{color:var(--text-dim);background:rgba(143,138,184,.1);border-color:rgba(143,138,184,.35);text-shadow:none}
+.ai-en{font-family:var(--font-mono);color:var(--accent-cyan)}
+.ai-ru{color:var(--text-dim)}
+.ai-kind{font:600 10px var(--font-mono);letter-spacing:.04em;padding:1px 5px;border-radius:2px;color:var(--accent-purple);background:rgba(179,136,255,.14)}
+.ai-low .ai-en,.ai-low .ai-ru{opacity:.75}
+.col-link a.search-link{display:block;white-space:nowrap}
+.col-link a.search-link+a.search-link{color:var(--text-dim);font-size:11px;margin-top:2px}
+.col-link a.search-link+a.search-link:hover{color:var(--accent-cyan)}
+</style>
+</head>
+<body>
+<div class="fx" aria-hidden="true"><i class="fx-scan"></i><i class="fx-beam"></i><i class="fx-vig"></i><i class="hc tl">SYS//AUDIT 2.077</i><i class="hc tr">LINK: ONLINE</i><i class="hc bl">ICE: BREACHED</i><i class="hc br">SEC LVL // ALPHA</i></div>
+
+    <header class="hero">
+        <div class="sun" aria-hidden="true"></div>
+        <svg class="sky" id="sky" viewBox="0 0 1200 260" preserveAspectRatio="xMidYMax slice" aria-hidden="true"></svg>
+        <i class="car" aria-hidden="true"></i><i class="car b" aria-hidden="true"></i>
+        <div class="hero-bar" aria-hidden="true"><span>NIGHT CITY // NODE 07</span><span>PING <b id="hudPing">12</b> ms // <b id="hudClock">--:--:--</b></span></div>
+        <div class="hero-text">
+            <h1><span class="glitch" data-text="CYBERPUNK 2077">CYBERPUNK 2077</span><small>Мод-Аудитор</small></h1>
+            <div class="subtitle">@@STATS@@</div>
+        </div>
+    </header>
+    <div class="ticker" aria-hidden="true"><div class="ticker-in" id="ticker"></div></div>
+
+    <section class="disk" aria-label="Занятое место архивами">
+        <div class="disk-figures">
+            <div><div class="fig-val fig-c" id="diskC">—</div><div class="fig-cap">Downloads, диск C:</div></div>
+            <div><div class="fig-val fig-d" id="diskD">—</div><div class="fig-cap">Vortex, диск D:</div></div>
+            <div><div class="fig-val fig-dup" id="diskDup">—</div><div class="fig-cap">Из них точные дубликаты в Downloads</div></div>
+        </div>
+        <div class="disk-bar" role="img" aria-label="Соотношение архивов в Downloads и Vortex">
+            <span class="seg seg-keep" id="segKeep"></span><span class="seg seg-dup" id="segDup"></span><span class="seg seg-vx" id="segVx"></span>
+        </div>
+    </section>
+
+    <div class="core-grid">@@CORE_CARDS@@</div>
+
+    <div class="toolbar">
+        <input type="text" id="modSearch" class="search-input" placeholder="Поиск: название (RU/EN), ID, файл, категория...">
+        <div class="filter-buttons">
+            @@FILTER_BUTTONS@@
+        </div>
+    </div>
+
+    <div id="dupBanner" class="dup-banner">
+        <div class="dup-banner-text">
+            ⚡ <strong>Вкладка дубликатов.</strong> Найденные точные копии уже присутствуют в Vortex (диск D:). Их можно безопасно удалить из Downloads (диск C:).
+        </div>
+        <div class="savings-pill" id="savingsPill">Очистка дубликатов освободит: 0.0 ГБ на диске C:</div>
+        <div class="dup-actions">
+            <button type="button" class="btn-delete" id="btnDeleteDups">🗑 Удалить дубликаты с диска</button>
+            <button type="button" class="btn" id="btnDownloadBat">💾 Скачать BAT-скрипт очистки</button>
+            <button type="button" class="btn" id="btnExportJson">📥 Экспорт JSON для clean</button>
+        </div>
+    </div>
+
+    <div class="table-container">
+        <table id="modsTable">
+            <thead>
+                <tr>
+                    <th data-sort="status" tabindex="0" style="width: 140px;">Статус<span class="sort-arrow"></span><div class="col-resizer"></div></th>
+                    <th data-sort="id" tabindex="0" style="width: 90px;">ID<span class="sort-arrow"></span><div class="col-resizer"></div></th>
+                    <th data-sort="name" tabindex="0" style="width: 260px;">Название мода<span class="sort-arrow"></span><div class="col-resizer"></div></th>
+                    <th style="width: 90px;">Ссылка<div class="col-resizer"></div></th>
+                    <th style="width: 240px;">Рекомендация<div class="col-resizer"></div></th>
+                    <th data-sort="size" tabindex="0" style="width: 380px;">В Downloads (C:)<span class="sort-arrow"></span><div class="col-resizer"></div></th>
+                    <th data-sort="size" tabindex="0" style="width: 380px;">В Vortex (D:)<span class="sort-arrow"></span><div class="col-resizer"></div></th>
+                </tr>
+            </thead>
+            <tbody>
+@@ROWS@@
+            </tbody>
+        </table>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script id="modAuditData" type="application/json">
+@@FILE_DATA@@
+</script>
+<script>
+    let fileData = JSON.parse(document.getElementById('modAuditData').textContent);
+    let currentFilter = 'all';
+
+    const $ = (sel, root = document) => root.querySelector(sel);
+    const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+    const filterButtons = $$('.filter-buttons .btn');
+    const searchInput = $('#modSearch');
+    const dupBanner = $('#dupBanner');
+    const tbody = $('#modsTable tbody');
+    const isDupInDownloads = (f) => f.s === 'downloads' && f.vd === 'exact_dup';
+
+    // ---------- Утилиты ----------
+    function fmtSize(bytes) {
+        if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' ГБ';
+        if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' МБ';
+        return Math.round(bytes / 1024) + ' КБ';
+    }
+
+    let toastTimer;
+    function toast(text, isErr) {
+        const el = $('#toast');
+        el.textContent = text;
+        el.className = 'toast show' + (isErr ? ' err' : '');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+    }
+
+    function flash(btn, text, cls) {
+        const old = btn.innerText;
+        btn.innerText = text;
+        if (cls) btn.classList.add(cls);
+        setTimeout(() => { btn.innerText = old; if (cls) btn.classList.remove(cls); }, 1500);
+    }
+
+    async function copyPath(path) {
+        try {
+            await navigator.clipboard.writeText(path);
+        } catch (err) {
+            const ta = document.createElement('textarea');
+            ta.value = path;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+        }
+    }
+
+    function postJson(url, payload) {
+        return fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+    }
+
+    // ---------- 1. Виджет занятого места ----------
+    function updateDisk() {
+        let c = 0, d = 0, dup = 0, dupCount = 0;
+        fileData.forEach(f => {
+            const z = Number(f.z) || 0;
+            if (f.s === 'downloads') {
+                c += z;
+                if (f.vd === 'exact_dup') { dup += z; dupCount++; }
+            } else {
+                d += z;
+            }
+        });
+        const total = (c + d) || 1;
+        $('#diskC').textContent = fmtSize(c);
+        $('#diskD').textContent = fmtSize(d);
+        $('#diskDup').textContent = fmtSize(dup);
+        $('#segKeep').style.width = ((c - dup) / total * 100) + '%';
+        $('#segDup').style.width = (dup / total * 100) + '%';
+        $('#segVx').style.width = (d / total * 100) + '%';
+        $('#savingsPill').textContent = 'Очистка дубликатов освободит: ' + fmtSize(dup) + ' на диске C:';
+        const delBtn = $('#btnDeleteDups');
+        delBtn.textContent = '🗑 Удалить дубликаты (' + dupCount + ')';
+        delBtn.disabled = dupCount === 0;
+    }
+    requestAnimationFrame(() => requestAnimationFrame(updateDisk));
+
+    // ---------- 2. Фильтры ----------
+    if (filterButtons.length) filterButtons[0].classList.add('active');
+
+    filterButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            filterButtons.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentFilter = btn.getAttribute('data-filter');
+            dupBanner.style.display = (currentFilter === 'dup') ? 'flex' : 'none';
+            applyFilters();
+        });
+    });
+
+    searchInput.addEventListener('input', applyFilters);
+
+    function applyFilters() {
+        const search = searchInput.value.toLowerCase();
+        Array.from(tbody.rows).forEach(row => {
+            const cats = (row.getAttribute('data-cats') || '').split(' ');
+            const searchData = row.getAttribute('data-search') || '';
+            const matchFilter = (currentFilter === 'all') || cats.includes(currentFilter);
+            const matchSearch = searchData.includes(search);
+            row.style.display = (matchFilter && matchSearch) ? '' : 'none';
+        });
+    }
+
+    // ---------- 3. Сортировка по заголовкам ----------
+    // Порядок строк меняется физически, а фильтр только скрывает строки,
+    // поэтому сортировка сохраняется при смене фильтра и поиске.
+    const STATUS_RANK = [['badge-danger', 4], ['badge-dup', 3], ['badge-old', 2], ['badge-update', 1]];
+    const UNITS = { b: 1, kb: 1024, mb: 1048576, gb: 1073741824, tb: 1099511627776,
+                    'б': 1, 'кб': 1024, 'мб': 1048576, 'гб': 1073741824, 'тб': 1099511627776 };
+    const sortState = { col: -1, dir: 1 };
+    Array.from(tbody.rows).forEach((r, i) => { r.dataset.i = i; });
+
+    function parseSizeText(text) {
+        const m = text.replace(',', '.').match(/([\d.]+)\s*([a-zа-я]+)/i);
+        return m ? parseFloat(m[1]) * (UNITS[m[2].toLowerCase()] || 1) : 0;
+    }
+
+    let sizeMap = null;
+    function cellSize(cell) {
+        if (!sizeMap) sizeMap = new Map(fileData.map(f => [f.p, Number(f.z) || 0]));
+        const bySize = sizeMap;
+        let total = 0;
+        $$('.file-item', cell).forEach(item => {
+            const btn = $('[data-copy-path]', item);
+            const path = btn && btn.getAttribute('data-copy-path');
+            if (path && bySize.has(path)) {
+                total += bySize.get(path);
+            } else {
+                const sz = $('.file-size', item);
+                total += sz ? parseSizeText(sz.textContent) : 0;
+            }
+        });
+        return total;
+    }
+
+    function sortValue(row, type, idx) {
+        const cell = row.cells[idx];
+        if (!cell) return null;
+        if (type === 'id') {
+            const n = parseInt(cell.textContent.replace(/\D/g, ''), 10);
+            return isNaN(n) ? null : n;
+        }
+        if (type === 'status') {
+            const hit = STATUS_RANK.find(([cls]) => cell.querySelector('.' + cls));
+            return hit ? hit[1] : 0;
+        }
+        if (type === 'size') return cellSize(cell);
+        return cell.textContent.trim().toLowerCase();
+    }
+
+    function sortBy(th) {
+        const idx = th.cellIndex;
+        const type = th.getAttribute('data-sort');
+        const firstDir = (type === 'status' || type === 'size') ? -1 : 1;
+        sortState.dir = (sortState.col === idx) ? -sortState.dir : firstDir;
+        sortState.col = idx;
+        const dir = sortState.dir;
+        sizeMap = null;
+
+        const keyed = Array.from(tbody.rows).map(r => ({ r, v: sortValue(r, type, idx), i: Number(r.dataset.i) }));
+        keyed.sort((a, b) => {
+            if (a.v === null || b.v === null) return ((a.v === null) - (b.v === null)) || (a.i - b.i);
+            const c = (typeof a.v === 'string') ? a.v.localeCompare(b.v, 'ru', { numeric: true }) : a.v - b.v;
+            return (c * dir) || (a.i - b.i);
+        });
+        keyed.forEach(k => tbody.appendChild(k.r));
+
+        $$('#modsTable th').forEach(h => {
+            const arrow = $('.sort-arrow', h);
+            if (!arrow) return;
+            const active = (h === th);
+            arrow.textContent = active ? (dir === 1 ? '▲' : '▼') : '';
+            if (active) h.setAttribute('aria-sort', dir === 1 ? 'ascending' : 'descending');
+            else h.removeAttribute('aria-sort');
+        });
+    }
+
+    $$('#modsTable th[data-sort]').forEach(th => {
+        th.addEventListener('click', (e) => {
+            if (e.target.closest('.col-resizer')) return;
+            sortBy(th);
+        });
+        th.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sortBy(th); }
+        });
+    });
+
+    // ---------- 4. «В папке» (через server.py) и копирование пути ----------
+    $$('.btn-copy').forEach(copyBtn => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-reveal';
+        btn.textContent = '📂 В папке';
+        btn.title = 'Показать файл в Проводнике';
+        btn.setAttribute('data-path', copyBtn.getAttribute('data-copy-path'));
+        copyBtn.before(btn);
+    });
+
+    document.addEventListener('click', async (e) => {
+        const revealBtn = e.target.closest('.btn-reveal');
+        const copyBtn = e.target.closest('.btn-copy');
+
+        if (revealBtn) {
+            const path = revealBtn.getAttribute('data-path');
+            try {
+                const res = await postJson('/api/reveal', { path });
+                const body = await res.json().catch(() => ({}));
+                if (res.ok) { flash(revealBtn, '✔ Открыто', 'btn-ok'); return; }
+                if (body.status === 'file_not_found') { flash(revealBtn, 'Файл не найден', 'btn-err'); return; }
+                throw new Error('server ' + res.status);
+            } catch (err) {
+                await copyPath(path);
+                flash(revealBtn, '✔ Путь скопирован', 'btn-ok');
+                toast('Сервер не запущен (server.py), путь скопирован в буфер обмена.');
+            }
+        } else if (copyBtn) {
+            await copyPath(copyBtn.getAttribute('data-copy-path'));
+            flash(copyBtn, '✔ Скопировано!', 'btn-ok');
+        }
+    });
+
+    // ---------- 5. Удаление дубликатов через сервер ----------
+    $('#btnDeleteDups').addEventListener('click', async () => {
+        const doomed = fileData.filter(isDupInDownloads);
+        if (!doomed.length) { toast('Точных копий для удаления нет.'); return; }
+        const bytes = doomed.reduce((s, f) => s + (Number(f.z) || 0), 0);
+        if (!confirm('Удалить файлов из Downloads: ' + doomed.length + ' (' + fmtSize(bytes) + ')?\nДействие необратимо.')) return;
+
+        const gone = new Set();
+        let failed = 0;
+        for (const f of doomed) {
+            try {
+                const res = await postJson('/api/delete', { path: f.p });
+                if (res.ok || res.status === 404) gone.add(f.p); else failed++;
+            } catch (err) {
+                if (!gone.size && !failed) {
+                    toast('Сервер не запущен. Запустите server.py или скачайте BAT-скрипт.', true);
+                    return;
+                }
+                failed++;
+            }
+        }
+
+        $$('.file-item').forEach(item => {
+            const btn = $('[data-copy-path]', item);
+            if (btn && gone.has(btn.getAttribute('data-copy-path'))) {
+                const cell = item.parentElement;
+                item.remove();
+                if (cell && !cell.querySelector('.file-item') && !cell.textContent.trim()) {
+                    cell.innerHTML = '<span class="empty-val">—</span>';
+                }
+            }
+        });
+        fileData = fileData.filter(f => !gone.has(f.p));
+        updateDisk();
+        toast('Удалено файлов: ' + gone.size + (failed ? ', не удалось: ' + failed : '') + '.', failed > 0);
+    });
+
+    // ---------- 6. Скачивание BAT-скрипта очистки точных дубликатов ----------
+    const btnBat = $('#btnDownloadBat');
+    if (btnBat) {
+        btnBat.addEventListener('click', () => {
+            const doomed = fileData.filter(isDupInDownloads);
+            if (!doomed.length) {
+                alert('Точных копий для удаления не найдено.');
+                return;
+            }
+
+            let bat = '@echo off\r\nchcp 65001 > nul\r\necho Удаление точных дубликатов из Downloads...\r\n';
+            doomed.forEach(f => {
+                bat += 'del /f /q "' + f.p + '"\r\n';
+            });
+            bat += 'echo Очистка завершена!\r\npause\r\n';
+
+            const blob = new Blob([bat], { type: 'application/x-bat' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'delete_exact_duplicates.bat';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+    }
+
+    // ---------- 7. Экспорт selection.json (для python nexus_links.py clean) ----------
+    const btnJson = $('#btnExportJson');
+    if (btnJson) {
+        btnJson.addEventListener('click', () => {
+            const doomed = fileData.filter(f => f.s === 'downloads' && (f.vd === 'exact_dup' || f.vd === 'older'));
+            const exportData = {
+                created: new Date().toISOString(),
+                files: doomed.map(f => ({
+                    path: f.p,
+                    size: f.z,
+                    mtime: f.m,
+                    sha256: f.h,
+                    reason: f.vd,
+                    keeper: f.k
+                }))
+            };
+
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'selection.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+    }
+
+    // ---------- 8. Изменение ширины колонок мышкой (как в Проводнике) ----------
+    $$('#modsTable th').forEach(th => {
+        const resizer = th.querySelector('.col-resizer');
+        if (!resizer) return;
+
+        let startX, startWidth;
+
+        resizer.addEventListener('mousedown', (e) => {
+            startX = e.pageX;
+            startWidth = th.offsetWidth;
+            resizer.classList.add('resizing');
+
+            const onMouseMove = (moveEvent) => {
+                const diff = moveEvent.pageX - startX;
+                th.style.width = Math.max(50, startWidth + diff) + 'px';
+            };
+
+            const onMouseUp = () => {
+                resizer.classList.remove('resizing');
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', onMouseUp);
+            };
+
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+            e.stopPropagation();
+        });
+    });
+</script>
+<script>
+// ===== CYBERPUNK FX: город, часы, бегущая строка, загрузка =====
+(function(){
+    const svg=document.getElementById('sky');
+    if(svg){
+        let s=2077;const r=()=>(s=s*16807%2147483647)/2147483647,i=n=>n|0;
+        const L=[{c:'l1',a:78,b:172,w:[26,58]},{c:'l2',a:58,b:142,w:[30,64],win:1},{c:'l3',a:36,b:114,w:[34,80],win:1,neon:1}];
+        let o='';
+        L.forEach((l,k)=>{
+            const wd={w1:'',w2:'',w3:''};let x=-12;
+            while(x<1212){
+                const w=l.w[0]+r()*(l.w[1]-l.w[0]),h=l.a+r()*(l.b-l.a),y=260-h;
+                o+=`<rect class="${l.c}" x="${i(x)}" y="${i(y)}" width="${i(w)+1}" height="${i(h)}"/>`;
+                if(r()<.32){o+=`<rect class="${l.c}" x="${i(x+w/2)}" y="${i(y-24)}" width="2" height="24"/>`;if(l.neon)o+=`<rect class="beacon" x="${i(x+w/2)-1}" y="${i(y-28)}" width="4" height="4"/>`}
+                if(l.win)for(let wy=y+7;wy<254;wy+=8)for(let wx=x+4;wx<x+w-5;wx+=6)if(r()<.3)wd['w'+(1+i(r()*3))]+=`M${i(wx)} ${i(wy)}h3v3h-3z`;
+                if(l.neon&&r()<.45){
+                    const fl=r()<.3?' fl':'';
+                    o+=`<rect class="n${1+i(r()*3)}${fl}" x="${i(x+w-6)}" y="${i(y+8)}" width="3" height="${i(18+r()*34)}"/>`;
+                    if(r()<.5)o+=`<rect class="n${1+i(r()*3)}${fl}" x="${i(x+5)}" y="${i(y+(r()*.5+.2)*h)}" width="${i(w*.6)}" height="3"/>`;
+                }
+                x+=w+(r()<.25?6:0)-1;
+            }
+            for(const c in wd)if(wd[c])o+=`<path class="${c} wl${k+1}" d="${wd[c]}"/>`;
+        });
+        svg.innerHTML=o;
+    }
+
+    const pad=n=>String(n).padStart(2,'0'),clk=document.getElementById('hudClock'),png=document.getElementById('hudPing');
+    const tick=()=>{const d=new Date();if(clk)clk.textContent=pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds())};
+    tick();setInterval(tick,1000);
+    setInterval(()=>{if(png)png.textContent=8+(Math.random()*22|0)},2200);
+
+    const tk=document.getElementById('ticker');
+    try{
+        const f=fileData,dups=f.filter(x=>x.s==='downloads'&&x.vd==='exact_dup'),sz=a=>fmtSize(a.reduce((t,x)=>t+(Number(x.z)||0),0));
+        const t=['▌ ИНДЕКС: '+f.length+' ФАЙЛОВ','DOWNLOADS C: '+sz(f.filter(x=>x.s==='downloads')),'VORTEX D: '+sz(f.filter(x=>x.s!=='downloads')),'ICE: '+dups.length+' ТОЧНЫХ КОПИЙ // '+sz(dups)+' К ОЧИСТКЕ','NEURAL LINK STABLE','NO DATA LEAKS DETECTED'].join('   ///   ');
+        if(tk)tk.textContent=t+'   ///   '+t;
+    }catch(e){}
+
+    if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+    const el=document.createElement('div'),pre=document.createElement('pre');
+    el.className='boot';el.setAttribute('aria-hidden','true');el.appendChild(pre);document.body.appendChild(el);
+    const lines=['NETWATCH UPLINK ........ <b>OK</b>','DECRYPTING MOD INDEX ... <b>OK</b>','ICE BREAKER v2.077 ..... <b>LOADED</b>','NIGHT CITY NODE 07 ..... <b>ONLINE</b>'];
+    const done=()=>{el.classList.add('off');setTimeout(()=>el.remove(),600)};
+    let n=0;(function step(){if(n<lines.length){pre.innerHTML+=lines[n++]+'\n';setTimeout(step,170)}else setTimeout(done,350)})();
+    el.addEventListener('click',done);document.addEventListener('keydown',done,{once:true});
+})();
+</script>
+</body>
+</html>

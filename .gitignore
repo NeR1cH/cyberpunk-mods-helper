@@ -1,0 +1,20 @@
+# Секреты (API-ключ OpenRouter и личные пути)
+config.json
+
+# Кэш нейросети и экспорты
+ai_cache.json
+blacklist.json
+mod_cache.json
+selection.json
+delete_exact_duplicates.bat
+
+# Сгенерированный HTML дашборда (шаблон dashboard_template.html остаётся в git)
+mod_audit_dashboard.html
+
+# Служебные файлы Python и редакторов
+__pycache__/
+*.py[cod]
+.venv/
+env/
+.vscode/*
+!.vscode/settings.json

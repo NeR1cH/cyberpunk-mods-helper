@@ -1,0 +1,13 @@
+{
+  "downloads": "C:\\Mods\\Downloads",
+  "vortex": "D:\\VortexMods\\cyberpunk2077",
+  "game": "C:\\Games\\Cyberpunk 2077",
+  "out": "mod_audit_dashboard.html",
+  "ai": {
+    "api_key": "YOUR_OPENROUTER_API_KEY",
+    "models": [
+      "nvidia/nemotron-3.5-lightning:free",
+      "google/gemma-4-31b-it:free"
+    ]
+  }
+}
