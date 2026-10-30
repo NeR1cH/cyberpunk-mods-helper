@@ -816,36 +816,30 @@ def _ai_ask(models: list[str], key: str, user_text: str) -> tuple[str, list[dict
     """Пробует модели по очереди. Возвращает (модель, список объектов)."""
     last: Optional[AIError] = None
     for model in models:
-        for attempt in range(2):
-            try:
-                data = _http_json(f"{OPENROUTER_BASE}/chat/completions", key, {
-                    "model": model,
-                    "messages": [{"role": "system", "content": ai_system_prompt()},
-                                 {"role": "user", "content": user_text}],
-                    "temperature": 0.1,
-                    "max_tokens": 8000,
-                })
-                text = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
-                items = _parse_ai_json(text)
-                if items is not None:
-                    return model, items
-                last = AIError(f"{model}: ответ не похож на JSON")
-                break
-            except AIError as exc:
-                last = exc
-                if exc.status in (401, 402, 403):
-                    raise AIError(f"OpenRouter отклонил ключ/баланс ({exc.status}). Проверьте ключ.",
-                                  exc.status, exc.body, fatal=True) from exc
-                if exc.status == 429:
-                    if re.search(r"per[- ]?day|daily", exc.body, re.I):
-                        raise AIError("Исчерпан суточный лимит бесплатных запросов OpenRouter "
-                                      "(50/сутки). Результаты сохранены, продолжите завтра.",
-                                      429, exc.body, fatal=True) from exc
-                    if attempt == 0:
-                        log.info("    лимит в минуту, жду 20 с…")
-                        time.sleep(20)
-                        continue
-                break
+        try:
+            data = _http_json(f"{OPENROUTER_BASE}/chat/completions", key, {
+                "model": model,
+                "messages": [{"role": "system", "content": ai_system_prompt()},
+                             {"role": "user", "content": user_text}],
+                "temperature": 0.1,
+                "max_tokens": 8000,
+            })
+            text = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+            items = _parse_ai_json(text)
+            if items is not None:
+                return model, items
+            last = AIError(f"{model}: ответ не похож на JSON")
+        except AIError as exc:
+            last = exc
+            if exc.status in (401, 402, 403):
+                raise AIError(f"OpenRouter отклонил ключ/баланс ({exc.status}). Проверьте ключ.",
+                              exc.status, exc.body, fatal=True) from exc
+            if exc.status == 429 and re.search(r"per[- ]?day|daily", exc.body, re.I):
+                raise AIError("Исчерпан суточный лимит бесплатных запросов OpenRouter "
+                              "(50/сутки). Результаты сохранены, продолжите завтра.",
+                              429, exc.body, fatal=True) from exc
+        if model != models[-1]:
+            log.info("    модель %s недоступна, сразу переключаюсь на следующую", model)
     raise last or AIError("нет доступных моделей")
 
 
@@ -1048,6 +1042,8 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
                 result[k] = info
                 cache[k] = {"info": info.__dict__, "model": model, "ts": int(time.time())}
                 got += 1
+            if model in models and models[0] != model:
+                models = [model, *(candidate for candidate in models if candidate != model)]
             save_ai_cache(cache)  # после каждой пачки: прогресс не пропадёт при сбое
             log.info("    получено и сохранено: %d из %d", got, len(batch))
     except Exception as exc:  # noqa: BLE001 — ИИ не должен ронять сборку дашборда
@@ -1068,7 +1064,15 @@ def cmd_ai_models(args: argparse.Namespace) -> int:
     for m in free:
         log.info("  %-58s контекст %s", m["id"], m.get("context_length", "?"))
     log.info("")
-    log.info("Выбрать модель: --ai-model <id> или в config.json: \"ai\": {\"models\": [\"<id>\", ...]}")
+    if not free:
+        log.warning("Сейчас API не вернул моделей с суффиксом :free.")
+        return 0
+    log.info("Скопируйте этот JSON-фрагмент внутрь объекта \"ai\" в config.json:")
+    print(json.dumps({"models": [m["id"] for m in free]}, ensure_ascii=False, indent=2), flush=True)
+    log.info("")
+    log.info("Модели из списка будут пробоваться по порядку. При ошибке/лимите переключение "
+             "на следующую модель происходит без ожидания; успешная модель станет первой для следующих пачек.")
+    log.info("Лимиты всей учётной записи, например суточная квота, переключением модели не обходятся.")
     return 0
 
 
