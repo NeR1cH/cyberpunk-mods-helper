@@ -1290,14 +1290,19 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     archives: list[Archive] = []
     excluded = [p for p in (s.vortex,) if p]  # не считать Vortex-папку внутри Downloads дважды
+    scanned_folders = 0
     for label, folder, skip in (("Downloads", s.downloads, excluded), ("Vortex", s.vortex, [])):
         if folder is None:
             continue
         if not folder.is_dir():
             log.warning("[!] Папка %s не найдена: %s", label, folder)
             continue
+        scanned_folders += 1
         log.info("[*] Сканирование %s: %s", label, folder)
         archives += scan_folder(folder, label.lower(), start_id=len(archives), exclude=skip)
+    if not scanned_folders:
+        log.error("Не найдена ни одна папка для сканирования. Проверьте downloads/vortex в config.json.")
+        return 2
 
     rejected = [a for a in archives if a.meta.rejected_id is not None]
     if rejected:

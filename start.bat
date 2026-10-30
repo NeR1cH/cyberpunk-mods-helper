@@ -24,10 +24,17 @@ echo [+] Python обнаружен.
 if not exist "config.json" (
     if exist "config.example.json" (
         copy "config.example.json" "config.json" > nul
+        if errorlevel 1 (
+            echo [!] Ошибка: не удалось создать config.json.
+            pause
+            exit /b 1
+        )
         echo [+] Создан файл config.json на основе config.example.json
-        echo     (!) Не забудьте открыть config.json и проверить пути/API-ключ.
+        echo     Важно: откройте config.json и проверьте пути/API-ключ.
     ) else (
         echo [!] Ошибка: config.example.json не найден!
+        pause
+        exit /b 1
     )
 ) else (
     echo [*] config.json уже существует, перезапись пропущена.
