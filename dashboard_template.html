@@ -754,6 +754,7 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
                 const body = await res.json().catch(() => ({}));
                 if (!res.ok) {
                     const messages = {
+                        not_found: 'Сервер устарел: обновите server.py вместе с остальными файлами проекта.',
                         blacklist_invalid: 'blacklist.json повреждён или имеет неверный формат; файл не изменён.',
                         blacklist_write_failed: 'Не удалось сохранить blacklist.json.',
                         bad_reason: 'Причина должна содержать от 1 до 500 символов.'

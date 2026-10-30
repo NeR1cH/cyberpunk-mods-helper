@@ -937,10 +937,19 @@ def archive_digest(paths: Iterable[Path]) -> list[str]:
 def load_ai_cache(path: Path = AI_CACHE_PATH) -> dict[str, dict]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        items = raw.get("items", {})
-        return items if isinstance(items, dict) else {}
-    except (OSError, ValueError, AttributeError):
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as exc:
+        log.warning("[AI] кэш не прочитан (%s): %s", path, exc)
+        return {}
+    try:
+        items = raw.get("items", {})
+        if isinstance(items, dict):
+            return items
+    except AttributeError:
+        pass
+    log.warning("[AI] кэш имеет неверный формат (%s); начинаю с пустого кэша", path)
+    return {}
 
 
 def save_ai_cache(items: dict[str, dict], path: Path = AI_CACHE_PATH) -> None:
@@ -948,7 +957,9 @@ def save_ai_cache(items: dict[str, dict], path: Path = AI_CACHE_PATH) -> None:
         path.write_text(json.dumps({"version": 1, "items": items}, ensure_ascii=False, indent=1),
                         encoding="utf-8")
     except OSError as exc:
-        log.warning("[AI] кэш не сохранён: %s", exc)
+        log.warning("[AI] кэш не сохранён (%s): %s", path, exc)
+    else:
+        log.info("[AI] кэш сохранён: %s (%d записей)", path, len(items))
 
 
 def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
@@ -1038,7 +1049,7 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
                 cache[k] = {"info": info.__dict__, "model": model, "ts": int(time.time())}
                 got += 1
             save_ai_cache(cache)  # после каждой пачки: прогресс не пропадёт при сбое
-            log.info("    получено: %d из %d", got, len(batch))
+            log.info("    получено и сохранено: %d из %d", got, len(batch))
     except Exception as exc:  # noqa: BLE001 — ИИ не должен ронять сборку дашборда
         log.warning("[AI] ошибка, продолжаю без ИИ: %s", exc)
     return result
