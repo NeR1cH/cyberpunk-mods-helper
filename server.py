@@ -4,8 +4,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8000
 ROOT = os.path.dirname(os.path.abspath(__file__))
-DOWNLOADS = os.path.realpath(sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/Downloads"))
-HTML = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, "mod_audit_dashboard.html")
+CONFIG_PATH = os.path.join(ROOT, "config.json")
+if os.path.isfile(CONFIG_PATH):
+    with open(CONFIG_PATH, encoding="utf-8-sig") as config_file:
+        CONFIG = json.load(config_file)
+    if not isinstance(CONFIG, dict):
+        raise ValueError(f"В {CONFIG_PATH} ожидается JSON-объект.")
+else:
+    CONFIG = {}
+
+downloads_arg = sys.argv[1] if len(sys.argv) > 1 else None
+downloads_config = CONFIG.get("downloads")
+DOWNLOADS = os.path.realpath(
+    downloads_arg or downloads_config or os.path.expanduser("~/Downloads")
+)
+
+html_arg = sys.argv[2] if len(sys.argv) > 2 else None
+html_config = CONFIG.get("out")
+HTML = html_arg or html_config or os.path.join(ROOT, "mod_audit_dashboard.html")
+if not os.path.isabs(HTML):
+    HTML = os.path.join(ROOT, HTML)
+
 ORIGINS = {f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}"}
 
 

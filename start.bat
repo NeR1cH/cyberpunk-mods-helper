@@ -1,11 +1,11 @@
 @echo off
 chcp 65001 > nul
-title Инициализация окружения Cyberpunk 2077 Mod Auditor
+title Cyberpunk 2077 Mod Auditor
 
 cd /d "%~dp0"
 
 echo ======================================================
-echo  Настройка проекта Cyberpunk 2077 Mod Auditor
+echo  Cyberpunk 2077 Mod Auditor
 echo ======================================================
 echo.
 
@@ -21,6 +21,7 @@ if %ERRORLEVEL% NEQ 0 (
 echo [+] Python обнаружен.
 
 :: 2. Создание config.json из примера
+set "CONFIG_CREATED=0"
 if not exist "config.json" (
     if exist "config.example.json" (
         copy "config.example.json" "config.json" > nul
@@ -29,6 +30,7 @@ if not exist "config.json" (
             pause
             exit /b 1
         )
+        set "CONFIG_CREATED=1"
         echo [+] Создан файл config.json на основе config.example.json
         echo     Важно: откройте config.json и проверьте пути/API-ключ.
     ) else (
@@ -56,10 +58,33 @@ if not exist "blacklist.json" (
     echo [*] blacklist.json уже существует.
 )
 
+if "%CONFIG_CREATED%"=="1" (
+    echo.
+    echo [!] Укажите реальные пути в config.json и запустите start.bat снова.
+    pause
+    exit /b 0
+)
+
 echo.
 echo ======================================================
-echo  Инициализация успешно завершена!
-echo  Отредактируйте config.json и запустите start.bat.
+echo  Сканирование архивов и создание дашборда...
 echo ======================================================
 echo.
-pause
+
+python nexus_links.py scan --no-open
+if errorlevel 1 (
+    echo.
+    echo [!] Сканирование не удалось.
+    echo     Проверьте пути downloads и vortex в config.json,
+    echo     убедитесь, что папки существуют, и запустите start.bat снова.
+    pause
+    exit /b 1
+)
+
+echo.
+echo ======================================================
+echo  Запуск дашборда на http://localhost:8000
+echo  Для завершения нажмите Ctrl+C.
+echo ======================================================
+echo.
+python server.py
