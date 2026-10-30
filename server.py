@@ -1,10 +1,12 @@
 """Локальный сервер дашборда. Запуск: python server.py [папка_Downloads] [файл_дашборда.html]"""
-import json, os, subprocess, sys, webbrowser
+import json, os, subprocess, sys, tempfile, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8000
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(ROOT, "config.json")
+BLACKLIST_PATH = os.path.join(ROOT, "blacklist.json")
+DEFAULT_MAX_MOD_ID = 35000
 if os.path.isfile(CONFIG_PATH):
     with open(CONFIG_PATH, encoding="utf-8-sig") as config_file:
         CONFIG = json.load(config_file)
@@ -61,9 +63,72 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply_json(403, "forbidden_origin")
         try:
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            path = json.loads(raw)["path"]
-            assert isinstance(path, str) and path
-        except (ValueError, KeyError, TypeError, AssertionError):
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ValueError("JSON object expected")
+        except (ValueError, TypeError):
+            return self.reply_json(400, "bad_request")
+
+        if self.path == "/api/blacklist":
+            action = payload.get("action")
+            mod_id = payload.get("mod_id")
+            max_mod_id = CONFIG.get("max_mod_id", DEFAULT_MAX_MOD_ID)
+            if (not isinstance(max_mod_id, int) or isinstance(max_mod_id, bool)
+                    or max_mod_id < 1):
+                max_mod_id = DEFAULT_MAX_MOD_ID
+            if (not isinstance(mod_id, int) or isinstance(mod_id, bool)
+                    or not 1 <= mod_id <= max_mod_id or action not in ("add", "remove")):
+                return self.reply_json(400, "bad_request")
+
+            reason = payload.get("reason", "")
+            if action == "add" and (
+                    not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 500):
+                return self.reply_json(400, "bad_reason")
+            if action == "remove" and mod_id in {786, 3560, 4088}:
+                return self.reply_json(403, "builtin_entry")
+
+            try:
+                if os.path.isfile(BLACKLIST_PATH):
+                    with open(BLACKLIST_PATH, encoding="utf-8-sig") as blacklist_file:
+                        entries = json.load(blacklist_file)
+                else:
+                    entries = {}
+                if not isinstance(entries, dict):
+                    return self.reply_json(500, "blacklist_invalid")
+            except (OSError, ValueError) as exc:
+                print(f"Не удалось прочитать blacklist.json: {exc}", file=sys.stderr)
+                return self.reply_json(500, "blacklist_invalid")
+
+            key = str(mod_id)
+            if action == "add":
+                entries[key] = {"reason": reason.strip()}
+            else:
+                entries.pop(key, None)
+
+            temp_path = None
+            try:
+                fd, temp_path = tempfile.mkstemp(
+                    prefix=".blacklist-", suffix=".tmp", dir=os.path.dirname(BLACKLIST_PATH) or ".")
+                with os.fdopen(fd, "w", encoding="utf-8") as blacklist_file:
+                    json.dump(entries, blacklist_file, ensure_ascii=False, indent=2)
+                    blacklist_file.write("\n")
+                os.replace(temp_path, BLACKLIST_PATH)
+            except OSError as exc:
+                print(f"Не удалось сохранить blacklist.json: {exc}", file=sys.stderr)
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError as cleanup_exc:
+                        print(f"Не удалось удалить временный файл {temp_path}: {cleanup_exc}",
+                              file=sys.stderr)
+                return self.reply_json(500, "blacklist_write_failed")
+            return self.reply_json(200, "ok")
+
+        try:
+            path = payload["path"]
+            if not isinstance(path, str) or not path:
+                raise ValueError("path expected")
+        except (KeyError, TypeError, ValueError):
             return self.reply_json(400, "bad_request")
 
         if self.path == "/api/reveal":

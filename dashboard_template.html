@@ -313,6 +313,17 @@
     .btn-copy:hover { background: rgba(255, 255, 255, 0.12); color: var(--text-bright); }
     .btn-reveal { background: rgba(0, 240, 255, 0.12); color: var(--accent-cyan); }
     .btn-reveal:hover { background: var(--accent-cyan); color: #000; }
+    .blacklist-action { margin-top: 6px; }
+    .btn-blacklist {
+        padding: 4px 8px;
+        color: var(--accent-red);
+        background: rgba(255, 80, 90, 0.08);
+        border: 1px solid rgba(255, 80, 90, 0.35);
+        cursor: pointer;
+        font-size: 10px;
+    }
+    .btn-blacklist:disabled { color: var(--text-dim); cursor: default; opacity: .7; }
+    .btn-blacklist:not(:disabled):hover { background: rgba(255, 80, 90, 0.2); }
     .btn-ok { color: var(--accent-green) !important; }
     .btn-err { color: var(--accent-red) !important; }
     .empty-val { color: #3b465c; }
@@ -719,8 +730,58 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     document.addEventListener('click', async (e) => {
         const revealBtn = e.target.closest('.btn-reveal');
         const copyBtn = e.target.closest('.btn-copy');
+        const blacklistBtn = e.target.closest('.btn-blacklist');
 
-        if (revealBtn) {
+        if (blacklistBtn && !blacklistBtn.disabled) {
+            const modId = Number(blacklistBtn.getAttribute('data-mod-id'));
+            const removing = blacklistBtn.getAttribute('data-custom') === 'true';
+            const reason = removing ? '' : prompt(
+                'Почему добавить мод #' + modId + ' в пользовательский чёрный список?',
+                'Добавлено вручную'
+            );
+            if (!removing && reason === null) return;
+            if (!removing && !reason.trim()) {
+                toast('Укажите причину добавления.', true);
+                return;
+            }
+            if (removing && !confirm('Убрать мод #' + modId + ' из пользовательского чёрного списка?')) return;
+            try {
+                const res = await postJson('/api/blacklist', {
+                    action: removing ? 'remove' : 'add',
+                    mod_id: modId,
+                    reason
+                });
+                const body = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    const messages = {
+                        blacklist_invalid: 'blacklist.json повреждён или имеет неверный формат; файл не изменён.',
+                        blacklist_write_failed: 'Не удалось сохранить blacklist.json.',
+                        bad_reason: 'Причина должна содержать от 1 до 500 символов.'
+                    };
+                    toast(messages[body.status] || 'Не удалось изменить чёрный список.', true);
+                    return;
+                }
+                if (removing) {
+                    const builtin = [786, 3560, 4088].includes(modId);
+                    if (builtin) {
+                        blacklistBtn.textContent = 'Встроенный список';
+                        blacklistBtn.disabled = true;
+                        blacklistBtn.removeAttribute('data-custom');
+                    } else {
+                        blacklistBtn.textContent = 'Добавить в мой список';
+                        blacklistBtn.setAttribute('data-custom', 'false');
+                        blacklistBtn.removeAttribute('title');
+                    }
+                } else {
+                    blacklistBtn.textContent = 'Убрать из моего списка';
+                    blacklistBtn.setAttribute('data-custom', 'true');
+                    blacklistBtn.title = 'Причина: ' + reason.trim();
+                }
+                toast('Изменения сохранены в blacklist.json. Перезапустите сканирование, чтобы обновить отметки.');
+            } catch (err) {
+                toast('Сервер не запущен или не удалось сохранить чёрный список.', true);
+            }
+        } else if (revealBtn) {
             const path = revealBtn.getAttribute('data-path');
             try {
                 const res = await postJson('/api/reveal', { path });

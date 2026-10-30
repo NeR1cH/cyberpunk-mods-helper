@@ -670,20 +670,38 @@ def build_rows(archives: list[Archive], blacklist: dict[int, str],
     return rows
 
 
-def load_blacklist(path: Path = BLACKLIST_PATH) -> dict[int, str]:
-    result = dict(OUTDATED_OR_DANGEROUS)
+def load_custom_blacklist(path: Path = BLACKLIST_PATH) -> dict[int, str]:
     if not path.is_file():
-        return result
+        return {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8-sig"))
-        for key, val in raw.items():
-            if isinstance(val, str):
-                result[int(key)] = val
-                continue
-            extra = ", ".join(str(val[k]) for k in ("game_version", "date") if val.get(k))
-            result[int(key)] = f"{val.get('reason', 'в чёрном списке')}" + (f" [{extra}]" if extra else "")
-    except (OSError, ValueError, AttributeError) as exc:
+    except (OSError, ValueError) as exc:
         log.warning("blacklist.json не прочитан (%s) — использую встроенный список", exc)
+        return {}
+    if not isinstance(raw, dict):
+        log.warning("blacklist.json должен содержать JSON-объект — использую встроенный список")
+        return {}
+
+    result: dict[int, str] = {}
+    for key, val in raw.items():
+        try:
+            mod_id = int(key)
+        except (TypeError, ValueError):
+            log.warning("Пропускаю некорректный Mod ID в blacklist.json: %s", key)
+            continue
+        if isinstance(val, str):
+            result[mod_id] = val
+        elif isinstance(val, dict):
+            extra = ", ".join(str(val[k]) for k in ("game_version", "date") if val.get(k))
+            result[mod_id] = f"{val.get('reason', 'в чёрном списке')}" + (f" [{extra}]" if extra else "")
+        else:
+            log.warning("Пропускаю некорректную запись blacklist.json для Mod ID %s", mod_id)
+    return result
+
+
+def load_blacklist(path: Path = BLACKLIST_PATH) -> dict[int, str]:
+    result = dict(OUTDATED_OR_DANGEROUS)
+    result.update(load_custom_blacklist(path))
     return result
 
 
@@ -974,6 +992,9 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
             k = norm_title(r.title)
             if k and k not in wanted:
                 wanted[k] = (r.title, [f.name for f in r.files][:2], [f.path for f in r.files][:3])
+        if not wanted:
+            log.info("[AI] нет модов без распознанного ID; сетевой анализ и запись в кэш не требуются")
+            return result
         todo = [k for k in wanted if args.ai_refresh or k not in result]
         if not todo:
             log.info("[AI] всё уже в кэше (%d), запросы не нужны", len(wanted))
@@ -1129,7 +1150,8 @@ def render_ai_note(info: Optional[AIInfo]) -> str:
 
 
 def render_row(row: ModRow, index_of: dict[int, int],
-               ai_map: Optional[dict[str, AIInfo]] = None) -> str:
+               ai_map: Optional[dict[str, AIInfo]] = None,
+               custom_blacklist: Optional[dict[int, str]] = None) -> str:
     info = (ai_map or {}).get(norm_title(row.title))
     badge_cls, badge_text = BADGES[row.status]
     if is_valid_mod_id(row.mod_id):
@@ -1167,6 +1189,24 @@ def render_row(row: ModRow, index_of: dict[int, int],
     elif row.status == "dup":
         action_lines[0] = f'<strong style="color:var(--accent-yellow);">{action_lines[0]}</strong>'
     action_html = "<br>".join(action_lines)
+    if is_valid_mod_id(row.mod_id):
+        custom_entries = custom_blacklist or {}
+        if row.mod_id in custom_entries:
+            custom_reason = custom_entries[row.mod_id]
+            blacklist_button = (
+                f'<button type="button" class="btn-blacklist" data-mod-id="{row.mod_id}" '
+                f'data-custom="true" title="Причина: {_esc(custom_reason)}">'
+                'Убрать из моего списка</button>')
+        elif row.mod_id in OUTDATED_OR_DANGEROUS:
+            blacklist_button = (
+                f'<button type="button" class="btn-blacklist" data-mod-id="{row.mod_id}" '
+                'disabled title="Эта отметка задана встроенным списком и не удаляется из дашборда">'
+                'Встроенный список</button>')
+        else:
+            blacklist_button = (
+                f'<button type="button" class="btn-blacklist" data-mod-id="{row.mod_id}" '
+                'data-custom="false">Добавить в мой список</button>')
+        action_html += '<div class="blacklist-action">' + blacklist_button + '</div>'
 
     extra = [info.en, info.ru, info.query, info.kind] if info else []
     search = " ".join([row.title, str(row.mod_id or ""), row.danger, *extra] + [f.name for f in row.files]).lower()
@@ -1229,12 +1269,13 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
                            ("vortex", "Только Vortex"), ("local", "Только Downloads")))
 
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    custom_blacklist = load_custom_blacklist()
     values = {
         "GENERATED": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "STATS": stats,
         "CORE_CARDS": cards,
         "FILTER_BUTTONS": buttons,
-        "ROWS": "\n".join(render_row(r, index_of, ai_map) for r in rows),
+        "ROWS": "\n".join(render_row(r, index_of, ai_map, custom_blacklist) for r in rows),
         "FILE_DATA": file_json,
     }
     return re.sub(r"@@([A-Z_]+)@@", lambda m: values[m.group(1)], template)
