@@ -40,6 +40,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote, quote_plus
 
+from mod_categories import source_categories, summarize_sources
+
 log = logging.getLogger("modaudit")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -347,6 +349,7 @@ class ModRow:
     status: str
     actions: list[str]
     cats: set[str]
+    grouping_reason: str
 
 
 def scan_folder(folder: Path, source: str, start_id: int = 0,
@@ -361,7 +364,8 @@ def scan_folder(folder: Path, source: str, start_id: int = 0,
         dirs[:] = [d for d in dirs
                    if d != QUARANTINE_DIRNAME
                    and os.path.normcase(os.path.abspath(os.path.join(root, d))) not in skip]
-        for name in names:
+        dirs.sort(key=str.casefold)
+        for name in sorted(names, key=str.casefold):
             p = Path(root) / name
             if p.suffix.lower() not in EXTENSIONS:
                 continue
@@ -617,6 +621,18 @@ def build_rows(archives: list[Archive], blacklist: dict[int, str],
     for key, files in buckets.items():
         files.sort(key=lambda a: (a.source != "downloads", a.name.lower()))
         mod_id = key if isinstance(key, int) else None
+        title = common_title(files)
+        if mod_id is None:
+            grouping_reason = "очищенное название архива (ID не распознан)"
+        else:
+            evidence = set()
+            if any(f.meta.mod_id == mod_id for f in files):
+                evidence.add("ID в имени архива")
+            if any(known_mod_id(f.meta.title) == mod_id for f in files):
+                evidence.add("встроенный словарь имён")
+            if title_ids and title_ids.get(norm_title(title)) == mod_id:
+                evidence.add("название ИИ совпало со встроенным словарём")
+            grouping_reason = f"Nexus ID #{mod_id} ({', '.join(sorted(evidence)) or 'одинаковый ID'})"
         danger = blacklist.get(mod_id, "") if mod_id is not None else ""
         has_dl = any(f.source == "downloads" for f in files)
         has_vx = any(f.source == "vortex" for f in files)
@@ -642,19 +658,16 @@ def build_rows(archives: list[Archive], blacklist: dict[int, str],
             cats.add("update")
             actions.append("В Downloads версия новее, чем в Vortex — обновите мод в Vortex, архив не удаляйте")
             status = status or "update"
-        if has_vx and not has_dl:
-            cats.add("vortex")
-        if has_dl and not has_vx:
-            cats.add("local")
+        cats.update(source_categories(f.source for f in files))
         if not actions:
             if has_dl and has_vx:
                 actions.append("Разные файлы одного мода — не дубликаты")
                 status = status or "both"
             elif has_vx:
-                actions.append("Оставить в Vortex")
+                actions.append("Архив найден только в папке загрузок Vortex")
                 status = status or "vortex"
             else:
-                actions.append("Только в Downloads — установить через Vortex или перенести")
+                actions.append("Архив найден только в Downloads; способ установки не определён")
                 status = status or "local"
         if mod_id is None:
             rejected = sorted({f.meta.rejected_id for f in files if f.meta.rejected_id is not None})
@@ -663,7 +676,7 @@ def build_rows(archives: list[Archive], blacklist: dict[int, str],
                     f"Число {', '.join(map(str, rejected))} из имени файла — не Mod ID "
                     f"(вне диапазона 1–{MAX_MOD_ID}, скорее всего File ID): ссылка только через поиск"
                 )
-        rows.append(ModRow(mod_id, common_title(files), files, danger, status, actions, cats))
+        rows.append(ModRow(mod_id, title, files, danger, status, actions, cats, grouping_reason))
 
     status_order = {"danger": 0, "dup": 1, "old": 2, "update": 3, "both": 4, "vortex": 5, "local": 6}
     rows.sort(key=lambda r: (status_order[r.status], r.title.lower()))
@@ -1225,11 +1238,13 @@ def render_row(row: ModRow, index_of: dict[int, int],
 
     extra = [info.en, info.ru, info.query, info.kind] if info else []
     search = " ".join([row.title, str(row.mod_id or ""), row.danger, *extra] + [f.name for f in row.files]).lower()
+    group_note = (f'<div class="group-note" title="Почему эти архивы объединены: '
+                  f'{_esc(row.grouping_reason)}">Группа: {_esc(row.grouping_reason)}</div>')
     return (
         f'<tr class="row-{row.status}" data-cats="{" ".join(sorted(row.cats))}" data-search="{_esc(search)}">'
         f'<td class="col-status" data-v="{STATUS_ORDER[row.status]}"><span class="badge {badge_cls}">{badge_text}</span></td>'
         f'<td class="col-id" data-v="{row.mod_id or ""}"><code>{row.mod_id or "—"}</code></td>'
-        f'<td class="col-title" data-v="{_esc(row.title.lower())}"><strong>{_esc(row.title)}</strong>{render_ai_note(info)}</td>'
+        f'<td class="col-title" data-v="{_esc(row.title.lower())}"><strong>{_esc(row.title)}</strong>{group_note}{render_ai_note(info)}</td>'
         f'<td class="col-link">{link}</td>'
         f'<td class="col-action" data-v="{_esc(row.actions[0])}">{action_html}</td>'
         f'<td class="col-files" data-v="{dl_size}">{dl_html}</td>'
@@ -1245,6 +1260,7 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
     reclaim = sum(a.size for a in archives if a.verdict == EXACT_DUP)
     counts = {c: sum(1 for r in rows if c in r.cats)
               for c in ("all", "dup", "old", "update", "danger", "vortex", "local")}
+    source_summary = summarize_sources(archives, rows)
 
     # Данные для JS (чекбоксы, экспорт). Индексы — по порядку отображения.
     ordered = [f for r in rows for f in r.files]
@@ -1259,12 +1275,17 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
     file_json = json.dumps(file_data, ensure_ascii=False).replace("</", "<\\/")
 
     stats = (
-        f'Модов (групп): <strong>{counts["all"]}</strong> &bull; '
+        f'Групп модов: <strong>{counts["all"]}</strong> &bull; '
         f'архивов: <strong>{len(archives)}</strong> &bull; '
         f'точных копий: <strong style="color:var(--accent-yellow);">{n_exact}</strong> '
         f'(<strong>{fmt_size(reclaim)}</strong>) &bull; '
         f'старых версий: <strong>{n_old}</strong> &bull; '
-        f'опасных: <strong style="color:var(--accent-red);">{counts["danger"]}</strong>'
+        f'опасных: <strong style="color:var(--accent-red);">{counts["danger"]}</strong><br>'
+        f'Группы только в Downloads: <strong>{source_summary.downloads_only_groups}</strong>; '
+        f'только в Vortex: <strong>{source_summary.vortex_only_groups}</strong>; '
+        f'в обеих папках: <strong>{source_summary.both_source_groups}</strong>. '
+        f'Архивов по папкам — Downloads: <strong>{source_summary.downloads_archives}</strong>, '
+        f'Vortex: <strong>{source_summary.vortex_archives}</strong>.'
     )
 
     if core_status:
@@ -1279,9 +1300,9 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
 
     buttons = "".join(
         f'<button type="button" class="btn" data-filter="{key}">{label} ({counts[key]})</button>'
-        for key, label in (("all", "Все"), ("dup", "⚡ Точные копии"), ("old", "🕓 Старые версии"),
+        for key, label in (("all", "Все группы"), ("dup", "⚡ Точные копии"), ("old", "🕓 Старые версии"),
                            ("update", "⬆ Обновить в Vortex"), ("danger", "⚠️ Опасные"),
-                           ("vortex", "Только Vortex"), ("local", "Только Downloads")))
+                           ("vortex", "Только архивы Vortex"), ("local", "Только архивы Downloads")))
 
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     custom_blacklist = load_custom_blacklist()
@@ -1360,7 +1381,9 @@ def cmd_scan(args: argparse.Namespace) -> int:
             continue
         scanned_folders += 1
         log.info("[*] Сканирование %s: %s", label, folder)
-        archives += scan_folder(folder, label.lower(), start_id=len(archives), exclude=skip)
+        found = scan_folder(folder, label.lower(), start_id=len(archives), exclude=skip)
+        archives += found
+        log.info("[*] Архивов найдено в %s: %d", label, len(found))
     if not scanned_folders:
         log.error("Не найдена ни одна папка для сканирования. Проверьте downloads/vortex в config.json.")
         return 2
