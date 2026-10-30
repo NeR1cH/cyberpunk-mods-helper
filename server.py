@@ -69,7 +69,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/reveal":
             if not os.path.exists(path):
                 return self.reply_json(404, "file_not_found")
-            subprocess.run(["explorer", f"/select,{os.path.normpath(path)}"])  # explorer всегда возвращает 1
+            target = os.path.normpath(path)
+            folder = target if os.path.isdir(target) else os.path.dirname(target)
+            try:
+                subprocess.Popen(["explorer", folder])
+            except OSError as exc:
+                print(f"Не удалось открыть папку {folder}: {exc}", file=sys.stderr)
+                return self.reply_json(500, "reveal_failed")
             return self.reply_json(200, "ok")
 
         if self.path == "/api/delete":

@@ -711,7 +711,7 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         btn.type = 'button';
         btn.className = 'btn-reveal';
         btn.textContent = '📂 В папке';
-        btn.title = 'Показать файл в Проводнике';
+        btn.title = 'Открыть папку с архивом';
         btn.setAttribute('data-path', copyBtn.getAttribute('data-copy-path'));
         copyBtn.before(btn);
     });
@@ -727,6 +727,11 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
                 const body = await res.json().catch(() => ({}));
                 if (res.ok) { flash(revealBtn, '✔ Открыто', 'btn-ok'); return; }
                 if (body.status === 'file_not_found') { flash(revealBtn, 'Файл не найден', 'btn-err'); return; }
+                if (body.status === 'reveal_failed') {
+                    flash(revealBtn, 'Не удалось открыть', 'btn-err');
+                    toast('Не удалось открыть папку в Проводнике.');
+                    return;
+                }
                 throw new Error('server ' + res.status);
             } catch (err) {
                 await copyPath(path);
