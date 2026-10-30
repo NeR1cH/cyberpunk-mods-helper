@@ -71,7 +71,7 @@ echo  Сканирование архивов и создание дашборд
 echo ======================================================
 echo.
 
-python nexus_links.py scan --no-open
+python nexus_links.py scan --no-open --ai-auto
 if errorlevel 1 (
     echo.
     echo [!] Сканирование не удалось.

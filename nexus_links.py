@@ -952,7 +952,16 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
     try:
         cfg = settings.cfg or {}
         ai_cfg = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
-        key = os.environ.get("OPENROUTER_API_KEY") or str(ai_cfg.get("api_key") or "")
+        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        key = key or str(ai_cfg.get("api_key") or "").strip()
+        if not key or key.upper().startswith(("YOUR_", "YOUR-")):
+            if args.ai_auto and not args.ai and not args.ai_all:
+                log.info("[AI] ключ OpenRouter не введён; запускаю сканирование без ИИ.")
+            else:
+                log.warning("[AI] нет ключа OpenRouter: задайте переменную OPENROUTER_API_KEY "
+                            "или \"ai\": {\"api_key\": \"...\"} в config.json. Показываю только кэш.")
+            return result
+
         models = [args.ai_model] if args.ai_model else (ai_cfg.get("models") or DEFAULT_AI_MODELS)
         max_requests = args.ai_max_requests or int(ai_cfg.get("max_requests") or AI_DEFAULT_MAX_REQUESTS)
 
@@ -968,10 +977,6 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
         todo = [k for k in wanted if args.ai_refresh or k not in result]
         if not todo:
             log.info("[AI] всё уже в кэше (%d), запросы не нужны", len(wanted))
-            return result
-        if not key:
-            log.warning("[AI] нет ключа OpenRouter: задайте переменную OPENROUTER_API_KEY "
-                        "или \"ai\": {\"api_key\": \"...\"} в config.json. Показываю только кэш.")
             return result
 
         log.info("[AI] модов к анализу: %d, модель: %s", len(todo), models[0])
@@ -1316,8 +1321,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
     blacklist = load_blacklist()
     rows = build_rows(archives, blacklist)   # известные моды опознаются по имени файла
     core = check_game_core(s.game)
-    # Без --ai подтягивается только кэш (ai_cache.json), сеть не используется.
-    ai_map = run_ai(rows, s, args, online=bool(args.ai or args.ai_all))
+    # Без AI-флагов подтягивается только кэш (ai_cache.json), сеть не используется.
+    ai_map = run_ai(rows, s, args, online=bool(args.ai or args.ai_all or args.ai_auto))
     # Английские названия от ИИ тоже сверяются со словарём; при совпадении строки пересобираются.
     ai_ids = known_ids_from_ai(rows, ai_map)
     if ai_ids:
@@ -1468,6 +1473,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--no-open", action="store_true", help="не открывать отчёт в браузере")
     p_scan.add_argument("--ai", action="store_true",
                         help="ИИ (OpenRouter): английские названия и запросы для поиска на Nexus (моды без ID)")
+    p_scan.add_argument("--ai-auto", action="store_true",
+                        help="использовать ИИ, если задан ключ OpenRouter; иначе сканировать без сети")
     p_scan.add_argument("--ai-all", action="store_true", help="ИИ-анализ для всех модов, не только без ID")
     p_scan.add_argument("--ai-refresh", action="store_true", help="игнорировать кэш ИИ и спросить заново")
     p_scan.add_argument("--ai-model", help="id модели OpenRouter (по умолчанию — бесплатные NVIDIA Nemotron)")
