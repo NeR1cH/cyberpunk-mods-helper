@@ -196,6 +196,72 @@ class GroupingTests(unittest.TestCase):
             [item.path for item in second],
         )
 
+    def test_exact_duplicates_prefer_vortex_keeper(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = {
+                name: root / name
+                for name in ("download.zip", "vortex-z.zip", "vortex-a.zip")
+            }
+            for path in paths.values():
+                path.write_bytes(b"identical archive")
+            archives = [
+                nexus_links.Archive(
+                    id=index,
+                    source=source,
+                    path=paths[name],
+                    size=paths[name].stat().st_size,
+                    mtime=0,
+                    meta=nexus_links.ParsedName(name, None),
+                )
+                for index, (source, name) in enumerate((
+                    ("downloads", "download.zip"),
+                    ("vortex", "vortex-z.zip"),
+                    ("vortex", "vortex-a.zip"),
+                ))
+            ]
+
+            nexus_links.mark_exact_duplicates(archives)
+
+        self.assertEqual(archives[0].verdict, nexus_links.EXACT_DUP)
+        self.assertEqual(archives[0].keeper, archives[2].id)
+        self.assertIn("в Vortex", archives[0].note)
+        self.assertEqual(archives[1].verdict, nexus_links.KEEP)
+        self.assertEqual(archives[2].verdict, nexus_links.KEEP)
+
+    def test_exact_duplicates_without_vortex_keep_original_over_browser_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original = root / "z-original.zip"
+            browser_copy = root / "a-copy.zip"
+            original.write_bytes(b"identical archive")
+            browser_copy.write_bytes(b"identical archive")
+            archives = [
+                nexus_links.Archive(
+                    id=0,
+                    source="downloads",
+                    path=browser_copy,
+                    size=browser_copy.stat().st_size,
+                    mtime=0,
+                    meta=nexus_links.ParsedName("Mod", None, copy_index=2),
+                ),
+                nexus_links.Archive(
+                    id=1,
+                    source="downloads",
+                    path=original,
+                    size=original.stat().st_size,
+                    mtime=0,
+                    meta=nexus_links.ParsedName("Mod", None),
+                ),
+            ]
+
+            nexus_links.mark_exact_duplicates(archives)
+
+        self.assertEqual(archives[0].verdict, nexus_links.EXACT_DUP)
+        self.assertEqual(archives[0].keeper, archives[1].id)
+        self.assertEqual(archives[1].verdict, nexus_links.KEEP)
+        self.assertIn("в Downloads", archives[0].note)
+
     def test_nested_source_roots_exclude_inner_root_from_outer_scan(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

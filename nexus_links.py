@@ -589,19 +589,24 @@ def mark_exact_duplicates(archives: list[Archive]) -> None:
             clusters[(a.size, a.sha256)].append(a)
 
     for cluster in clusters.values():
-        if len(cluster) < 2:
-            continue
-        vortex = sorted((a for a in cluster if a.source == "vortex"), key=lambda a: str(a.path))
-        downloads = [a for a in cluster if a.source == "downloads"]
-        if vortex:
-            keeper, doomed = vortex[0], downloads
-        else:
-            downloads.sort(key=lambda a: (a.meta.copy_index or 0, len(a.name), a.mtime, str(a.path)))
-            keeper, doomed = downloads[0], downloads[1:]
-        for a in doomed:
-            a.verdict, a.keeper = EXACT_DUP, keeper.id
-            where = "в Vortex" if keeper.source == "vortex" else "в Downloads"
-            a.note = f"Идентичен (SHA-256) файлу {keeper.name} {where}"
+        _mark_duplicate_cluster(cluster)
+
+
+def _mark_duplicate_cluster(cluster: list[Archive]) -> None:
+    if len(cluster) < 2:
+        return
+    vortex = sorted((a for a in cluster if a.source == "vortex"), key=lambda a: str(a.path))
+    downloads = [a for a in cluster if a.source == "downloads"]
+    if vortex:
+        keeper, doomed = vortex[0], downloads
+    else:
+        downloads.sort(key=lambda a: (a.meta.copy_index or 0, len(a.name), a.mtime, str(a.path)))
+        keeper, doomed = downloads[0], downloads[1:]
+
+    where = "в Vortex" if keeper.source == "vortex" else "в Downloads"
+    for archive in doomed:
+        archive.verdict, archive.keeper = EXACT_DUP, keeper.id
+        archive.note = f"Идентичен (SHA-256) файлу {keeper.name} {where}"
 
 
 def mark_versions(archives: list[Archive]) -> None:
