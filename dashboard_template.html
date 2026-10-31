@@ -519,6 +519,24 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         </table>
     </div>
 
+    <div class="table-container" id="gameModsContainer" hidden>
+        <p class="group-note" style="padding: 10px 14px;">@@GAME_STATUS@@</p>
+        <table id="gameModsTable">
+            <thead>
+                <tr>
+                    <th>Раздел игры</th>
+                    <th>Найденная папка или файл</th>
+                    <th>Файлов</th>
+                    <th>Общий размер</th>
+                    <th>Папка</th>
+                </tr>
+            </thead>
+            <tbody>
+@@GAME_ROWS@@
+            </tbody>
+        </table>
+    </div>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script id="modAuditData" type="application/json">
@@ -535,6 +553,8 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     const searchInput = $('#modSearch');
     const dupBanner = $('#dupBanner');
     const tbody = $('#modsTable tbody');
+    const gameModsContainer = $('#gameModsContainer');
+    const gameModsTbody = $('#gameModsTable tbody');
     const isDupInDownloads = (f) => f.s === 'downloads' && f.vd === 'exact_dup';
 
     // ---------- Утилиты ----------
@@ -624,6 +644,15 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
 
     function applyFilters() {
         const search = searchInput.value.toLowerCase();
+        const showGameMods = currentFilter === 'local';
+        gameModsContainer.hidden = !showGameMods;
+        $('#modsTable').parentElement.hidden = showGameMods;
+        if (showGameMods) {
+            Array.from(gameModsTbody.rows).forEach(row => {
+                row.style.display = (row.getAttribute('data-search') || '').includes(search) ? '' : 'none';
+            });
+            return;
+        }
         Array.from(tbody.rows).forEach(row => {
             const cats = (row.getAttribute('data-cats') || '').split(' ');
             const searchData = row.getAttribute('data-search') || '';

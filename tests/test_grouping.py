@@ -28,7 +28,7 @@ class GroupingTests(unittest.TestCase):
         rows = nexus_links.build_rows(files, {})
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].cats, {"all"})
+        self.assertEqual(rows[0].cats, {"all", "nexus_downloads"})
         self.assertEqual(len(rows[0].files), 2)
         self.assertIn("ID в имени архива", rows[0].grouping_reason)
 
@@ -41,10 +41,10 @@ class GroupingTests(unittest.TestCase):
         rows = nexus_links.build_rows(files, {})
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].cats, {"all"})
+        self.assertEqual(rows[0].cats, {"all", "nexus_downloads"})
         self.assertEqual(rows[0].grouping_reason, "очищенное название архива (ID не распознан)")
 
-    def test_source_filters_only_include_exclusive_groups(self) -> None:
+    def test_source_filters_preserve_exclusive_categories_and_include_nexus_filter(self) -> None:
         files = [
             archive(0, "downloads", "Downloads Only", 1),
             archive(1, "vortex", "Vortex Only", 2),
@@ -54,12 +54,12 @@ class GroupingTests(unittest.TestCase):
 
         rows = {row.title: row for row in nexus_links.build_rows(files, {})}
 
-        self.assertIn("local", rows["Downloads Only"].cats)
+        self.assertIn("nexus_downloads", rows["Downloads Only"].cats)
         self.assertNotIn("vortex", rows["Downloads Only"].cats)
         self.assertIn("vortex", rows["Vortex Only"].cats)
-        self.assertNotIn("local", rows["Vortex Only"].cats)
-        self.assertNotIn("local", rows["Shared"].cats)
+        self.assertNotIn("nexus_downloads", rows["Vortex Only"].cats)
         self.assertNotIn("vortex", rows["Shared"].cats)
+        self.assertIn("nexus_downloads", rows["Shared"].cats)
         self.assertIn("способ установки не определён", rows["Downloads Only"].actions[0])
 
     def test_ai_mapping_can_merge_an_id_less_title_group(self) -> None:
@@ -93,6 +93,47 @@ class GroupingTests(unittest.TestCase):
         self.assertIn("в обеих папках: <strong>1</strong>", html)
         self.assertIn("Downloads: <strong>2</strong>, Vortex: <strong>2</strong>", html)
         self.assertIn("ID в имени архива", html)
+        self.assertIn('data-filter="nexus_downloads" title="Все группы с архивами из downloads', html)
+        self.assertIn(">Локальные в игре (0)</button>", html)
+        self.assertIn(">Из Nexus Downloads (2)</button>", html)
+        self.assertIn(">Моды в Vortex Downloads (1)</button>", html)
+        self.assertIn("Папка игры не найдена", html)
+
+    def test_game_mod_scan_lists_known_mod_folders_and_ignores_other_game_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            game = Path(temp_dir)
+            archive_dir = game / "archive" / "pc" / "mod"
+            archive_dir.mkdir(parents=True)
+            (archive_dir / "sample.archive").write_bytes(b"archive")
+            scripts = game / "r6" / "scripts" / "SampleScript"
+            scripts.mkdir(parents=True)
+            (scripts / "init.reds").write_bytes(b"script")
+            (game / "Cyberpunk2077.exe").write_bytes(b"game")
+            (game / "untracked" / "file.dll").parent.mkdir()
+            (game / "untracked" / "file.dll").write_bytes(b"not in known mod folders")
+
+            entries = nexus_links.scan_game_mods(game)
+
+        self.assertEqual(
+            [(entry.section, entry.name, entry.file_count) for entry in entries],
+            [("archive/pc/mod", "sample.archive", 1), ("r6/scripts", "SampleScript", 1)],
+        )
+        self.assertEqual([entry.size for entry in entries], [7, 6])
+
+    def test_game_mod_inventory_renders_in_separate_local_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            game = Path(temp_dir)
+            root = game / "mods"
+            mod = root / "SampleRedmod"
+            mod.mkdir(parents=True)
+            (mod / "info.json").write_text("{}", encoding="utf-8")
+            entries = nexus_links.scan_game_mods(game)
+            html = nexus_links.render_dashboard({}, [], [], game_mods=entries, game_path=game)
+
+        self.assertIn(">Локальные в игре (1)</button>", html)
+        self.assertIn('id="gameModsContainer" hidden', html)
+        self.assertIn("SampleRedmod", html)
+        self.assertIn("Найдено элементов: 1", html)
 
     def test_scan_order_is_stable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

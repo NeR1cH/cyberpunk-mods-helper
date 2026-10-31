@@ -69,10 +69,8 @@ def build_scan_plan(
 
 
 def source_categories(sources: Iterable[str]) -> set[str]:
-    """Return mutually exclusive source filters for a group's archive locations."""
+    """Return the Vortex-only filter for archive groups."""
     found = set(sources)
-    if found == {"downloads"}:
-        return {"local"}
     if found == {"vortex"}:
         return {"vortex"}
     return set()

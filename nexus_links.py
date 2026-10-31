@@ -372,6 +372,79 @@ class ModRow:
     grouping_reason: str
 
 
+@dataclass(frozen=True)
+class GameModEntry:
+    section: str
+    name: str
+    path: Path
+    file_count: int
+    size: int
+
+
+GAME_MOD_ROOTS = (
+    ("archive/pc/mod", Path("archive/pc/mod")),
+    ("archive/pc/patch", Path("archive/pc/patch")),
+    ("r6/scripts", Path("r6/scripts")),
+    ("r6/tweaks", Path("r6/tweaks")),
+    ("red4ext/plugins", Path("red4ext/plugins")),
+    ("bin/x64/plugins", Path("bin/x64/plugins")),
+    ("mods (REDmod)", Path("mods")),
+)
+
+
+def scan_game_mods(game_path: Optional[Path]) -> list[GameModEntry]:
+    """Inventory entries in known Cyberpunk mod deployment folders."""
+    if game_path is None or not game_path.is_dir():
+        return []
+
+    entries: list[GameModEntry] = []
+    for section, relative_root in GAME_MOD_ROOTS:
+        root = game_path / relative_root
+        if not root.is_dir():
+            continue
+        try:
+            children = sorted(root.iterdir(), key=lambda path: path.name.casefold())
+        except OSError as exc:
+            log.warning("Не удалось прочитать папку модов %s: %s", root, exc)
+            continue
+
+        for child in children:
+            if child.is_symlink():
+                continue
+            files: list[Path] = []
+            if child.is_file():
+                files.append(child)
+            elif child.is_dir():
+                for current, dirs, names in os.walk(child, onerror=lambda exc: log.warning(
+                        "Не удалось прочитать папку модов %s: %s", exc.filename, exc.strerror)):
+                    dirs[:] = [name for name in dirs if not (Path(current) / name).is_symlink()]
+                    dirs.sort(key=str.casefold)
+                    files.extend(
+                        path for name in names
+                        if not (path := Path(current) / name).is_symlink()
+                    )
+            else:
+                continue
+
+            total_size = 0
+            readable_files = 0
+            for path in files:
+                try:
+                    total_size += path.stat().st_size
+                    readable_files += 1
+                except OSError as exc:
+                    log.warning("Не удалось прочитать файл мода %s: %s", path, exc)
+            if readable_files:
+                entries.append(GameModEntry(
+                    section=section,
+                    name=child.name,
+                    path=child,
+                    file_count=readable_files,
+                    size=total_size,
+                ))
+    return entries
+
+
 def scan_folder(folder: Path, source: str, start_id: int = 0,
                 exclude: Iterable[Path] = ()) -> list[Archive]:
     items: list[Archive] = []
@@ -679,6 +752,8 @@ def build_rows(archives: list[Archive], blacklist: dict[int, str],
             actions.append("В Downloads версия новее, чем в Vortex — обновите мод в Vortex, архив не удаляйте")
             status = status or "update"
         cats.update(source_categories(f.source for f in files))
+        if has_dl:
+            cats.add("nexus_downloads")
         if not actions:
             if has_dl and has_vx:
                 actions.append("Разные файлы одного мода — не дубликаты")
@@ -1452,15 +1527,35 @@ def render_row(row: ModRow, index_of: dict[int, int],
     )
 
 
+def render_game_mod_entry(entry: GameModEntry) -> str:
+    relative = entry.path.as_posix()
+    search = f"{entry.section} {entry.name} {relative}".lower()
+    return (
+        f'<tr data-search="{_esc(search)}">'
+        f'<td><code>{_esc(entry.section)}</code></td>'
+        f'<td><strong>{_esc(entry.name)}</strong>'
+        f'<div class="group-note">{_esc(relative)}</div></td>'
+        f'<td data-v="{entry.file_count}">{entry.file_count}</td>'
+        f'<td data-v="{entry.size}">{fmt_size(entry.size)}</td>'
+        f'<td><button type="button" class="btn-reveal" data-path="{_esc(entry.path)}" '
+        f'title="Открыть в Проводнике">📂 В папке</button></td>'
+        f'</tr>'
+    )
+
+
 def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
                      archives: list[Archive], ai_map: Optional[dict[str, AIInfo]] = None,
                      installation_notes: Optional[dict[int, InstallationNote]] = None,
-                     nexus_records: Optional[dict[int, NexusModRecord]] = None) -> str:
+                     nexus_records: Optional[dict[int, NexusModRecord]] = None,
+                     game_mods: Optional[list[GameModEntry]] = None,
+                     game_path: Optional[Path] = None) -> str:
+    game_mods = game_mods or []
     n_exact = sum(1 for a in archives if a.verdict == EXACT_DUP)
     n_old = sum(1 for a in archives if a.verdict == OLDER)
     reclaim = sum(a.size for a in archives if a.verdict == EXACT_DUP)
     counts = {c: sum(1 for r in rows if c in r.cats)
-              for c in ("all", "dup", "old", "update", "danger", "vortex", "local")}
+              for c in ("all", "dup", "old", "update", "danger", "vortex", "nexus_downloads")}
+    counts["local"] = len(game_mods)
     source_summary = summarize_sources(archives, rows)
 
     # Данные для JS (чекбоксы, экспорт). Индексы — по порядку отображения.
@@ -1500,10 +1595,34 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
         cards = '<div class="core-card"><div class="core-info"><div class="core-val">Папка игры не задана (--game) — проверка фреймворков пропущена</div></div></div>'
 
     buttons = "".join(
-        f'<button type="button" class="btn" data-filter="{key}">{label} ({counts[key]})</button>'
-        for key, label in (("all", "Все группы"), ("dup", "⚡ Точные копии"), ("old", "🕓 Старые версии"),
-                           ("update", "⬆ Обновить в Vortex"), ("danger", "⚠️ Опасные"),
-                           ("vortex", "Только архивы Vortex"), ("local", "Только архивы Downloads")))
+        f'<button type="button" class="btn" data-filter="{key}"'
+        f'{title_attr}>{label} ({counts[key]})</button>'
+        for key, label, title_attr in (
+            ("all", "Все группы", ""),
+            ("dup", "⚡ Точные копии", ""),
+            ("old", "🕓 Старые версии", ""),
+            ("update", "⬆ Обновить в Vortex", ""),
+            ("danger", "⚠️ Опасные", ""),
+            ("vortex", "Моды в Vortex Downloads", ""),
+            ("local", "Локальные в игре", ' title="Инвентарь известных папок модов внутри папки игры; Vortex-развёрнутые файлы тоже видны."'),
+            ("nexus_downloads", "Из Nexus Downloads", ' title="Все группы с архивами из downloads, включая те, что также есть в Vortex."'),
+        )
+    )
+
+    if game_path is None:
+        game_status = "Папка игры не найдена. Укажите путь `game` в config.json."
+    elif not game_path.is_dir():
+        game_status = f"Папка игры не найдена: {game_path}"
+    elif game_mods:
+        game_status = (
+            f"Найдено элементов: {len(game_mods)}. Сканируются только известные папки модов; "
+            "это не гарантированное число отдельных модов. Файлы, развернутые Vortex в игру, тоже учитываются."
+        )
+    else:
+        game_status = (
+            "В известных папках модификаций файлы не найдены. Изменения в других местах игры "
+            "этот инвентарь может не обнаружить."
+        )
 
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     custom_blacklist = load_custom_blacklist()
@@ -1512,6 +1631,8 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
         "STATS": stats,
         "CORE_CARDS": cards,
         "FILTER_BUTTONS": buttons,
+        "GAME_STATUS": _esc(game_status),
+        "GAME_ROWS": "\n".join(render_game_mod_entry(entry) for entry in game_mods),
         "ROWS": "\n".join(
             render_row(r, index_of, ai_map, custom_blacklist, installation_notes, nexus_records)
             for r in rows
@@ -1606,6 +1727,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
     blacklist = load_blacklist()
     rows = build_rows(archives, blacklist)   # известные моды опознаются по имени файла
     core = check_game_core(s.game)
+    game_mods = scan_game_mods(s.game)
+    log.info("[*] Найдено элементов в известных папках модов игры: %d", len(game_mods))
     # Без AI-флагов подтягивается только кэш (ai_cache.json), сеть не используется.
     ai_map = run_ai(rows, s, args, online=bool(args.ai or args.ai_all or args.ai_auto))
     # Английские названия от ИИ тоже сверяются со словарём; при совпадении строки пересобираются.
@@ -1629,7 +1752,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     s.out.parent.mkdir(parents=True, exist_ok=True)
     s.out.write_text(
-        render_dashboard(core, rows, archives, ai_map, installation_notes, nexus_records),
+        render_dashboard(
+            core, rows, archives, ai_map, installation_notes, nexus_records,
+            game_mods, s.game,
+        ),
         encoding="utf-8",
     )
 
