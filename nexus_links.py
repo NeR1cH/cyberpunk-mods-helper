@@ -1885,6 +1885,16 @@ def verify_entry(
     return None
 
 
+def _load_clean_selection(path: Path) -> list[dict]:
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict) or not isinstance(data.get("files"), list):
+        raise ValueError("ожидается объект JSON с массивом files")
+    entries = data["files"]
+    if any(not isinstance(entry, dict) for entry in entries):
+        raise ValueError("каждый элемент files должен быть объектом")
+    return entries
+
+
 def cmd_clean(args: argparse.Namespace) -> int:
     s = load_settings(args)
     if s.downloads is None:
@@ -1892,13 +1902,8 @@ def cmd_clean(args: argparse.Namespace) -> int:
                   "файлы вне её трогать нельзя.")
         return 2
     try:
-        data = json.loads(Path(args.selection).read_text(encoding="utf-8-sig"))
-        if not isinstance(data, dict) or not isinstance(data.get("files"), list):
-            raise ValueError("ожидается объект JSON с массивом files")
-        entries = data["files"]
-        if any(not isinstance(entry, dict) for entry in entries):
-            raise ValueError("каждый элемент files должен быть объектом")
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+        entries = _load_clean_selection(Path(args.selection))
+    except (OSError, ValueError, TypeError) as exc:
         log.error("Не удалось прочитать список очистки: %s", exc)
         return 2
 

@@ -159,6 +159,29 @@ class CleanSelectionTests(unittest.TestCase):
                 with self.assertLogs("modaudit", level="ERROR"):
                     self.assertEqual(nexus_links.cmd_clean(args), 2)
 
+    def test_clean_rejects_non_object_entries_before_processing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            selection_path = root / "selection.json"
+            selection_path.write_text(json.dumps({"files": [None]}), encoding="utf-8")
+            settings = nexus_links.Settings(
+                downloads=root / "downloads",
+                vortex=None,
+                game=None,
+                out=root / "report.html",
+                quarantine=root / "quarantine",
+            )
+            args = Namespace(
+                selection=str(selection_path),
+                no_verify=False,
+                apply=False,
+                mode="quarantine",
+            )
+
+            with patch("nexus_links.load_settings", return_value=settings):
+                with self.assertLogs("modaudit", level="ERROR"):
+                    self.assertEqual(nexus_links.cmd_clean(args), 2)
+
     def test_verify_entry_rejects_malformed_fields_without_raising(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
