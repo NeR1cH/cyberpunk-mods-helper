@@ -121,6 +121,40 @@ class OpenRouterLimitTests(unittest.TestCase):
             self.assertEqual(openrouter_limits.cached_analysis_page_count(cache_path), 2)
 
 
+class AICacheTests(unittest.TestCase):
+    def test_cached_ai_info_normalizes_records_and_rejects_untrusted_fields(self) -> None:
+        rows = [
+            nexus_links.ModRow(None, "Example Mod", [], "", "", [], set(), ""),
+            nexus_links.ModRow(None, "Malformed Mod", [], "", "", [], set(), ""),
+        ]
+        cache = {
+            "example mod": {
+                "info": {
+                    "en": "Example Mod",
+                    "ru": "Пример",
+                    "query": "Example Mod search",
+                    "kind": "utility",
+                    "conf": "high",
+                    "mod_id": 786,
+                }
+            },
+            "malformed mod": {
+                "info": {
+                    "en": "Malformed Mod",
+                    "conf": "certain",
+                    "mod_id": True,
+                }
+            },
+        }
+
+        result = nexus_links._cached_ai_info(rows, cache)
+
+        self.assertEqual(result["example mod"].mod_id, 786)
+        self.assertEqual(result["example mod"].conf, "high")
+        self.assertEqual(result["malformed mod"].conf, "low")
+        self.assertIsNone(result["malformed mod"].mod_id)
+
+
 class CleanSelectionTests(unittest.TestCase):
     def test_ai_max_requests_zero_disables_requests_and_negative_is_rejected(self) -> None:
         parser = nexus_links.build_parser()

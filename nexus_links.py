@@ -1167,19 +1167,31 @@ def save_ai_cache(items: dict[str, dict], path: Path = AI_CACHE_PATH) -> None:
         log.info("[AI] кэш сохранён: %s (%d записей)", path, len(items))
 
 
+def _cached_ai_info(rows: list[ModRow], cache: dict[str, dict]) -> dict[str, AIInfo]:
+    result: dict[str, AIInfo] = {}
+    for row in rows:
+        key = norm_title(row.title)
+        entry = cache.get(key)
+        info = entry.get("info") if isinstance(entry, dict) else None
+        if not isinstance(info, dict):
+            continue
+        confidence = info.get("conf")
+        result[key] = AIInfo(
+            _clean_str(info.get("en")),
+            _clean_str(info.get("ru")),
+            _clean_str(info.get("query"), 80),
+            _clean_str(info.get("kind"), 40),
+            confidence if confidence in ("high", "medium", "low") else "low",
+            _to_ai_mod_id(info.get("mod_id")),
+        )
+    return result
+
+
 def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
            online: bool) -> dict[str, AIInfo]:
     """Возвращает {norm_title: AIInfo}. Без online — только то, что уже лежит в кэше."""
     cache = load_ai_cache()
-    result: dict[str, AIInfo] = {}
-    for r in rows:
-        entry = cache.get(norm_title(r.title))
-        if isinstance(entry, dict) and isinstance(entry.get("info"), dict):
-            i = entry["info"]
-            result[norm_title(r.title)] = AIInfo(
-                _clean_str(i.get("en")), _clean_str(i.get("ru")), _clean_str(i.get("query"), 80),
-                _clean_str(i.get("kind"), 40), i.get("conf") if i.get("conf") in ("high", "medium", "low") else "low",
-                _to_ai_mod_id(i.get("mod_id")))
+    result = _cached_ai_info(rows, cache)
     if not online:
         return result
 
