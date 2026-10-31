@@ -232,6 +232,39 @@ class InstallationNoteTests(unittest.TestCase):
 
         self.assertEqual(stale, [2, 3])
 
+    def test_analysis_page_payload_is_validated_and_converted_to_record(self) -> None:
+        payload = json.dumps({
+            "data": {
+                "name": "Example overhaul",
+                "summary": "Changes city behavior",
+                "description": "Complete author page text.",
+                "category": {"name": "Gameplay"},
+                "tags": [{"name": "Overhaul"}, {}, {"name": 123}],
+            }
+        }).encode("utf-8")
+
+        record = mod_recommendations._record_from_page_payload(1234, payload)
+
+        self.assertEqual(record.mod_id, 1234)
+        self.assertEqual(record.name, "Example overhaul")
+        self.assertEqual(record.summary, "Changes city behavior")
+        self.assertEqual(record.description, "Complete author page text.")
+        self.assertEqual(record.category, "Gameplay")
+        self.assertEqual(record.tags, ("Overhaul",))
+
+    def test_analysis_page_payload_rejects_invalid_data_and_oversized_response(self) -> None:
+        for payload in (b"[]", b'{"data": {"name": "Missing description"}}'):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    mod_recommendations._record_from_page_payload(1234, payload)
+
+        with patch(
+            "mod_recommendations.MAX_DESCRIPTION_BYTES",
+            1,
+        ):
+            with self.assertRaisesRegex(ValueError, "допустимый размер"):
+                mod_recommendations._record_from_page_payload(1234, b"{}")
+
     def test_public_page_request_uses_shared_bounded_request(self) -> None:
         response = MagicMock()
         response.__enter__.return_value = response

@@ -465,6 +465,37 @@ def save_nexus_mod_records(records: dict[int, NexusModRecord], path: Path) -> No
     _save_analysis_cache(cached, path)
 
 
+def _record_from_page_payload(mod_id: int, payload: bytes) -> NexusModRecord:
+    if len(payload) > MAX_DESCRIPTION_BYTES:
+        raise ValueError("ответ превышает допустимый размер")
+    body = json.loads(payload.decode("utf-8"))
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, dict):
+        raise ValueError("в ответе отсутствует объект data")
+
+    name = data.get("name")
+    description = data.get("description")
+    if not isinstance(name, str) or not isinstance(description, str):
+        raise ValueError("в ответе отсутствуют название или описание")
+
+    category_data = data.get("category")
+    category = category_data.get("name", "") if isinstance(category_data, dict) else ""
+    tags_data = data.get("tags")
+    tags = tuple(
+        tag["name"] for tag in tags_data
+        if isinstance(tag, dict) and isinstance(tag.get("name"), str)
+    ) if isinstance(tags_data, list) else ()
+    return NexusModRecord(
+        mod_id=mod_id,
+        name=name[:300],
+        summary=str(data.get("summary") or "")[:2000],
+        description=description,
+        category=str(category)[:120],
+        tags=tags[:100],
+        fetched_at=time.time(),
+    )
+
+
 def fetch_nexus_mod_records(
     mod_ids: set[int],
     cache_path: Path,
@@ -490,32 +521,7 @@ def fetch_nexus_mod_records(
     for index, mod_id in enumerate(request_ids):
         try:
             payload = _request_mod_page(mod_id)
-            if len(payload) > MAX_DESCRIPTION_BYTES:
-                raise ValueError("ответ превышает допустимый размер")
-            body = json.loads(payload.decode("utf-8"))
-            data = body.get("data") if isinstance(body, dict) else None
-            if not isinstance(data, dict):
-                raise ValueError("в ответе отсутствует объект data")
-            name = data.get("name")
-            description = data.get("description")
-            if not isinstance(name, str) or not isinstance(description, str):
-                raise ValueError("в ответе отсутствуют название или описание")
-            category_data = data.get("category")
-            category = category_data.get("name", "") if isinstance(category_data, dict) else ""
-            tags_data = data.get("tags")
-            tags = tuple(
-                tag["name"] for tag in tags_data
-                if isinstance(tag, dict) and isinstance(tag.get("name"), str)
-            ) if isinstance(tags_data, list) else ()
-            records[mod_id] = NexusModRecord(
-                mod_id=mod_id,
-                name=name[:300],
-                summary=str(data.get("summary") or "")[:2000],
-                description=description,
-                category=str(category)[:120],
-                tags=tags[:100],
-                fetched_at=time.time(),
-            )
+            records[mod_id] = _record_from_page_payload(mod_id, payload)
             updated += 1
         except urllib.error.HTTPError as exc:
             log.warning("[Nexus AI] Не удалось получить страницу #%d: HTTP %d", mod_id, exc.code)
