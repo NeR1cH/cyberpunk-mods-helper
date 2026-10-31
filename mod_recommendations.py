@@ -226,6 +226,17 @@ def _request_mod_page(mod_id: int) -> bytes:
         return response.read(MAX_DESCRIPTION_BYTES + 1)
 
 
+def _stale_mod_ids(mod_ids: set[int], cached_at: dict[int, float], now: float) -> list[int]:
+    return [
+        mod_id for mod_id in sorted(mod_ids)
+        if mod_id > 0
+        and (
+            mod_id not in cached_at
+            or now - cached_at[mod_id] >= CACHE_TTL_SECONDS
+        )
+    ]
+
+
 def _fetch_note(mod_id: int) -> InstallationNote | None:
     try:
         payload = _request_mod_page(mod_id)
@@ -270,10 +281,11 @@ def load_installation_notes(
     notes = _load_cache(cache_path)
     now = time.time()
     requested = sorted(mod_id for mod_id in mod_ids if mod_id > 0)
-    stale = [
-        mod_id for mod_id in requested
-        if mod_id not in notes or now - notes[mod_id].checked_at >= CACHE_TTL_SECONDS
-    ]
+    stale = _stale_mod_ids(
+        mod_ids,
+        {mod_id: note.checked_at for mod_id, note in notes.items()},
+        now,
+    )
     request_ids = stale[:max_requests]
     if len(stale) > len(request_ids):
         log.info("[Nexus] За лимитом запросов оставлено %d описаний; используйте кэш или "
@@ -464,10 +476,11 @@ def fetch_nexus_mod_records(
     records = _load_analysis_cache(cache_path)
     now = time.time()
     requested = sorted(mod_id for mod_id in mod_ids if mod_id > 0)
-    stale = [
-        mod_id for mod_id in requested
-        if mod_id not in records or now - records[mod_id].fetched_at >= CACHE_TTL_SECONDS
-    ]
+    stale = _stale_mod_ids(
+        mod_ids,
+        {mod_id: record.fetched_at for mod_id, record in records.items()},
+        now,
+    )
     request_ids = stale[:max_requests]
     if len(stale) > len(request_ids):
         log.info("[Nexus AI] За лимитом запросов к Nexus оставлено %d страниц",

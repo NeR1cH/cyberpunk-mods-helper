@@ -220,6 +220,18 @@ class CleanSelectionTests(unittest.TestCase):
 
 
 class InstallationNoteTests(unittest.TestCase):
+    def test_stale_mod_selection_is_sorted_and_uses_cache_ttl_boundary(self) -> None:
+        now = 1_000_000.0
+        cached_at = {
+            1: now,
+            2: now - mod_recommendations.CACHE_TTL_SECONDS,
+            4: now + 60,
+        }
+
+        stale = mod_recommendations._stale_mod_ids({4, -1, 3, 2, 1, 0}, cached_at, now)
+
+        self.assertEqual(stale, [2, 3])
+
     def test_public_page_request_uses_shared_bounded_request(self) -> None:
         response = MagicMock()
         response.__enter__.return_value = response
