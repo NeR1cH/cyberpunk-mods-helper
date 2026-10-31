@@ -1187,6 +1187,22 @@ def _cached_ai_info(rows: list[ModRow], cache: dict[str, dict]) -> dict[str, AII
     return result
 
 
+def _build_ai_batch_payload(
+    batch: list[str],
+    wanted: dict[str, tuple[str, list[str], list[Path]]],
+) -> str:
+    payload = [
+        {
+            "i": index,
+            "title": wanted[key][0],
+            "files": wanted[key][1],
+            "contents": archive_digest(wanted[key][2]),
+        }
+        for index, key in enumerate(batch)
+    ]
+    return "Определи моды:\n" + json.dumps(payload, ensure_ascii=False)
+
+
 def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
            online: bool) -> dict[str, AIInfo]:
     """Возвращает {norm_title: AIInfo}. Без online — только то, что уже лежит в кэше."""
@@ -1255,11 +1271,9 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
             batches = batches[:max_requests]
 
         for n, batch in enumerate(batches, 1):
-            payload = [{"i": i, "title": wanted[k][0], "files": wanted[k][1],
-                        "contents": archive_digest(wanted[k][2])} for i, k in enumerate(batch)]
             log.info("[AI] пачка %d/%d (%d шт.)…", n, len(batches), len(batch))
             try:
-                model, items = _ai_ask(models, key, "Определи моды:\n" + json.dumps(payload, ensure_ascii=False))
+                model, items = _ai_ask(models, key, _build_ai_batch_payload(batch, wanted))
             except AIError as exc:
                 log.warning("[AI] %s", exc)
                 if exc.fatal:

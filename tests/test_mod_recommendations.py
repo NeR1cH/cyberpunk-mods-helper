@@ -121,7 +121,7 @@ class OpenRouterLimitTests(unittest.TestCase):
             self.assertEqual(openrouter_limits.cached_analysis_page_count(cache_path), 2)
 
 
-class AICacheTests(unittest.TestCase):
+class AITests(unittest.TestCase):
     def test_cached_ai_info_normalizes_records_and_rejects_untrusted_fields(self) -> None:
         rows = [
             nexus_links.ModRow(None, "Example Mod", [], "", "", [], set(), ""),
@@ -153,6 +153,45 @@ class AICacheTests(unittest.TestCase):
         self.assertEqual(result["example mod"].conf, "high")
         self.assertEqual(result["malformed mod"].conf, "low")
         self.assertIsNone(result["malformed mod"].mod_id)
+
+    def test_ai_batch_payload_keeps_indices_and_sends_only_selected_archive_data(self) -> None:
+        wanted = {
+            "first mod": (
+                "First Mod",
+                ["first.zip"],
+                [Path("private/user/Downloads/first.zip")],
+            ),
+            "second mod": ("Second Mod", ["second.zip"], [Path("second.zip")]),
+        }
+        with patch(
+            "nexus_links.archive_digest",
+            side_effect=[["second.reds"], ["first.archive"]],
+        ) as digest:
+            prompt = nexus_links._build_ai_batch_payload(
+                ["second mod", "first mod"],
+                wanted,
+            )
+
+        payload = json.loads(prompt.removeprefix("Определи моды:\n"))
+        self.assertEqual(
+            payload,
+            [
+                {
+                    "i": 0,
+                    "title": "Second Mod",
+                    "files": ["second.zip"],
+                    "contents": ["second.reds"],
+                },
+                {
+                    "i": 1,
+                    "title": "First Mod",
+                    "files": ["first.zip"],
+                    "contents": ["first.archive"],
+                },
+            ],
+        )
+        self.assertNotIn("private/user", prompt)
+        self.assertEqual(digest.call_count, 2)
 
 
 class CleanSelectionTests(unittest.TestCase):
