@@ -416,6 +416,49 @@ GAME_MOD_ROOTS = (
 )
 
 
+def _game_mod_files(entry_path: Path) -> list[Path]:
+    if entry_path.is_symlink():
+        return []
+    if entry_path.is_file():
+        return [entry_path]
+    if not entry_path.is_dir():
+        return []
+
+    files: list[Path] = []
+
+    def on_error(exc: OSError) -> None:
+        log.warning("Не удалось прочитать папку модов %s: %s", exc.filename, exc.strerror)
+
+    for current, dirs, names in os.walk(entry_path, onerror=on_error):
+        dirs[:] = [name for name in dirs if not (Path(current) / name).is_symlink()]
+        dirs.sort(key=str.casefold)
+        files.extend(
+            path for name in names
+            if not (path := Path(current) / name).is_symlink()
+        )
+    return files
+
+
+def _scan_game_mod_entry(section: str, child: Path) -> Optional[GameModEntry]:
+    total_size = 0
+    readable_files = 0
+    for path in _game_mod_files(child):
+        try:
+            total_size += path.stat().st_size
+            readable_files += 1
+        except OSError as exc:
+            log.warning("Не удалось прочитать файл мода %s: %s", path, exc)
+    if not readable_files:
+        return None
+    return GameModEntry(
+        section=section,
+        name=child.name,
+        path=child,
+        file_count=readable_files,
+        size=total_size,
+    )
+
+
 def scan_game_mods(game_path: Optional[Path]) -> list[GameModEntry]:
     """Inventory entries in known Cyberpunk mod deployment folders."""
     if game_path is None or not game_path.is_dir():
@@ -433,39 +476,9 @@ def scan_game_mods(game_path: Optional[Path]) -> list[GameModEntry]:
             continue
 
         for child in children:
-            if child.is_symlink():
-                continue
-            files: list[Path] = []
-            if child.is_file():
-                files.append(child)
-            elif child.is_dir():
-                for current, dirs, names in os.walk(child, onerror=lambda exc: log.warning(
-                        "Не удалось прочитать папку модов %s: %s", exc.filename, exc.strerror)):
-                    dirs[:] = [name for name in dirs if not (Path(current) / name).is_symlink()]
-                    dirs.sort(key=str.casefold)
-                    files.extend(
-                        path for name in names
-                        if not (path := Path(current) / name).is_symlink()
-                    )
-            else:
-                continue
-
-            total_size = 0
-            readable_files = 0
-            for path in files:
-                try:
-                    total_size += path.stat().st_size
-                    readable_files += 1
-                except OSError as exc:
-                    log.warning("Не удалось прочитать файл мода %s: %s", path, exc)
-            if readable_files:
-                entries.append(GameModEntry(
-                    section=section,
-                    name=child.name,
-                    path=child,
-                    file_count=readable_files,
-                    size=total_size,
-                ))
+            entry = _scan_game_mod_entry(section, child)
+            if entry is not None:
+                entries.append(entry)
     return entries
 
 

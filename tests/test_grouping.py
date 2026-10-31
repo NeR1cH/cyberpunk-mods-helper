@@ -145,6 +145,21 @@ class GroupingTests(unittest.TestCase):
         )
         self.assertEqual([entry.size for entry in entries], [7, 6])
 
+    def test_game_mod_scan_includes_files_and_ignores_empty_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            game = Path(temp_dir)
+            root = game / "archive" / "pc" / "mod"
+            root.mkdir(parents=True)
+            (root / "standalone.archive").write_bytes(b"archive")
+            (root / "empty").mkdir()
+
+            entries = nexus_links.scan_game_mods(game)
+
+        self.assertEqual(
+            [(entry.name, entry.file_count, entry.size) for entry in entries],
+            [("standalone.archive", 1, 7)],
+        )
+
     def test_game_mod_inventory_renders_in_separate_local_table(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             game = Path(temp_dir)
