@@ -87,6 +87,31 @@ class GroupingTests(unittest.TestCase):
         self.assertIn("nexus_downloads", rows["Shared"].cats)
         self.assertIn("способ установки не определён", rows["Downloads Only"].actions[0])
 
+    def test_group_classification_preserves_status_priority_and_all_actions(self) -> None:
+        exact = archive(0, "downloads", "Exact copy", 1234)
+        exact.verdict = nexus_links.EXACT_DUP
+        older = archive(1, "downloads", "Old version", 1234)
+        older.verdict = nexus_links.OLDER
+        newer = archive(2, "downloads", "New version", 1234)
+        newer.verdict = nexus_links.NEWER
+        vortex = archive(3, "vortex", "Installed version", 1234)
+
+        status, actions, categories = nexus_links._classify_group_files(
+            [exact, older, newer, vortex],
+            1234,
+            "Known issue",
+        )
+
+        self.assertEqual(status, "danger")
+        self.assertEqual(
+            categories,
+            {"all", "danger", "dup", "old", "update", "nexus_downloads"},
+        )
+        self.assertEqual(len(actions), 3)
+        self.assertIn("Точных копий в Downloads: 1", actions[0])
+        self.assertIn("Старых версий в Downloads: 1", actions[1])
+        self.assertIn("версия новее, чем в Vortex", actions[2])
+
     def test_ai_mapping_can_merge_an_id_less_title_group(self) -> None:
         files = [
             archive(0, "downloads", "Unknown Mod"),

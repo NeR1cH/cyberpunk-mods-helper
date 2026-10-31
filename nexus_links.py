@@ -770,6 +770,67 @@ def resolve_mod_id(a: Archive, title_ids: Optional[dict[str, int]] = None) -> Op
     return mid
 
 
+def _classify_group_files(
+    files: list[Archive],
+    mod_id: Optional[int],
+    danger: str,
+) -> tuple[str, list[str], set[str]]:
+    has_downloads = any(file.source == "downloads" for file in files)
+    has_vortex = any(file.source == "vortex" for file in files)
+    exact = [file for file in files if file.verdict == EXACT_DUP]
+    older = [file for file in files if file.verdict == OLDER]
+    newer = [file for file in files if file.verdict == NEWER]
+
+    categories = {"all"}
+    actions: list[str] = []
+    status = ""
+    if danger:
+        categories.add("danger")
+        status = "danger"
+    if exact:
+        categories.add("dup")
+        actions.append(
+            f"Точных копий в Downloads: {len(exact)} "
+            f"({fmt_size(sum(file.size for file in exact))}) — можно удалить"
+        )
+        status = status or "dup"
+    if older:
+        categories.add("old")
+        actions.append(f"Старых версий в Downloads: {len(older)} — есть более новые архивы")
+        status = status or "old"
+    if newer:
+        categories.add("update")
+        actions.append(
+            "В Downloads версия новее, чем в Vortex — обновите мод в Vortex, архив не удаляйте"
+        )
+        status = status or "update"
+
+    categories.update(source_categories(file.source for file in files))
+    if has_downloads:
+        categories.add("nexus_downloads")
+    if not actions:
+        if has_downloads and has_vortex:
+            actions.append("Разные файлы одного мода — не дубликаты")
+            status = status or "both"
+        elif has_vortex:
+            actions.append("Архив найден только в папке загрузок Vortex")
+            status = status or "vortex"
+        else:
+            actions.append("Архив найден только в Downloads; способ установки не определён")
+            status = status or "local"
+
+    if mod_id is None:
+        rejected = sorted({
+            file.meta.rejected_id for file in files if file.meta.rejected_id is not None
+        })
+        if rejected:
+            actions.append(
+                f"Число {', '.join(map(str, rejected))} из имени файла — не Mod ID "
+                f"(вне диапазона 1–{MAX_MOD_ID}, скорее всего File ID): ссылка только через поиск"
+            )
+    return status, actions, categories
+
+
 def build_rows(archives: list[Archive], blacklist: dict[int, str],
                title_ids: Optional[dict[str, int]] = None) -> list[ModRow]:
     """title_ids — {norm_title: Mod ID}, найденные по английскому названию от ИИ (см. known_ids_from_ai)."""
@@ -796,51 +857,10 @@ def build_rows(archives: list[Archive], blacklist: dict[int, str],
                 evidence.add("название ИИ совпало со встроенным словарём")
             grouping_reason = f"Nexus ID #{mod_id} ({', '.join(sorted(evidence)) or 'одинаковый ID'})"
         danger = blacklist.get(mod_id, "") if mod_id is not None else ""
-        has_dl = any(f.source == "downloads" for f in files)
-        has_vx = any(f.source == "vortex" for f in files)
-        exact = [f for f in files if f.verdict == EXACT_DUP]
-        older = [f for f in files if f.verdict == OLDER]
-        newer = [f for f in files if f.verdict == NEWER]
-
-        cats = {"all"}
-        actions: list[str] = []
-        status = ""
-        if danger:
-            cats.add("danger")
-            status = "danger"
-        if exact:
-            cats.add("dup")
-            actions.append(f"Точных копий в Downloads: {len(exact)} ({fmt_size(sum(f.size for f in exact))}) — можно удалить")
-            status = status or "dup"
-        if older:
-            cats.add("old")
-            actions.append(f"Старых версий в Downloads: {len(older)} — есть более новые архивы")
-            status = status or "old"
-        if newer:
-            cats.add("update")
-            actions.append("В Downloads версия новее, чем в Vortex — обновите мод в Vortex, архив не удаляйте")
-            status = status or "update"
-        cats.update(source_categories(f.source for f in files))
-        if has_dl:
-            cats.add("nexus_downloads")
-        if not actions:
-            if has_dl and has_vx:
-                actions.append("Разные файлы одного мода — не дубликаты")
-                status = status or "both"
-            elif has_vx:
-                actions.append("Архив найден только в папке загрузок Vortex")
-                status = status or "vortex"
-            else:
-                actions.append("Архив найден только в Downloads; способ установки не определён")
-                status = status or "local"
-        if mod_id is None:
-            rejected = sorted({f.meta.rejected_id for f in files if f.meta.rejected_id is not None})
-            if rejected:
-                actions.append(
-                    f"Число {', '.join(map(str, rejected))} из имени файла — не Mod ID "
-                    f"(вне диапазона 1–{MAX_MOD_ID}, скорее всего File ID): ссылка только через поиск"
-                )
-        rows.append(ModRow(mod_id, title, files, danger, status, actions, cats, grouping_reason))
+        status, actions, categories = _classify_group_files(files, mod_id, danger)
+        rows.append(
+            ModRow(mod_id, title, files, danger, status, actions, categories, grouping_reason)
+        )
 
     status_order = {"danger": 0, "dup": 1, "old": 2, "update": 3, "both": 4, "vortex": 5, "local": 6}
     rows.sort(key=lambda r: (status_order[r.status], r.title.lower()))
