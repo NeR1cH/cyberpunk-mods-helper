@@ -642,23 +642,25 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
 
     searchInput.addEventListener('input', applyFilters);
 
+    function filterRows(rows, search, matchesFilter) {
+        Array.from(rows).forEach(row => {
+            const searchData = row.getAttribute('data-search') || '';
+            row.style.display = (matchesFilter(row) && searchData.includes(search)) ? '' : 'none';
+        });
+    }
+
     function applyFilters() {
         const search = searchInput.value.toLowerCase();
         const showGameMods = currentFilter === 'local';
         gameModsContainer.hidden = !showGameMods;
         $('#modsTable').parentElement.hidden = showGameMods;
         if (showGameMods) {
-            Array.from(gameModsTbody.rows).forEach(row => {
-                row.style.display = (row.getAttribute('data-search') || '').includes(search) ? '' : 'none';
-            });
+            filterRows(gameModsTbody.rows, search, () => true);
             return;
         }
-        Array.from(tbody.rows).forEach(row => {
+        filterRows(tbody.rows, search, row => {
             const cats = (row.getAttribute('data-cats') || '').split(' ');
-            const searchData = row.getAttribute('data-search') || '';
-            const matchFilter = (currentFilter === 'all') || cats.includes(currentFilter);
-            const matchSearch = searchData.includes(search);
-            row.style.display = (matchFilter && matchSearch) ? '' : 'none';
+            return (currentFilter === 'all') || cats.includes(currentFilter);
         });
     }
 
