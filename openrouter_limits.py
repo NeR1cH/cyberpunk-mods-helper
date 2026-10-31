@@ -86,6 +86,20 @@ def block_remaining_requests_this_run() -> None:
         _requests_this_process = max(_requests_this_process, PER_RUN_REQUEST_BUDGET)
 
 
+def _daily_usage_count(data: object, today: str, path: Path) -> int | None:
+    if not isinstance(data, dict):
+        log.error("[AI] Счётчик лимита OpenRouter имеет неверный формат: %s", path)
+        return None
+    if data.get("date") != today:
+        return 0
+
+    used = data.get("requests")
+    if not isinstance(used, int) or isinstance(used, bool) or used < 0:
+        log.error("[AI] Счётчик запросов OpenRouter повреждён: %s", path)
+        return None
+    return used
+
+
 def remaining_daily_requests(path: Path = USAGE_PATH) -> int | None:
     """Return today's remaining budget, or None when the ledger cannot be trusted."""
     try:
@@ -98,15 +112,8 @@ def remaining_daily_requests(path: Path = USAGE_PATH) -> int | None:
         log.error("[AI] Не удалось проверить дневной лимит OpenRouter: %s", exc)
         return None
 
-    if not isinstance(data, dict):
-        log.error("[AI] Счётчик лимита OpenRouter имеет неверный формат: %s", path)
-        return None
-    if data.get("date") != datetime.now(timezone.utc).date().isoformat():
-        return DAILY_REQUEST_BUDGET
-
-    used = data.get("requests")
-    if not isinstance(used, int) or isinstance(used, bool) or used < 0:
-        log.error("[AI] Счётчик запросов OpenRouter повреждён: %s", path)
+    used = _daily_usage_count(data, datetime.now(timezone.utc).date().isoformat(), path)
+    if used is None:
         return None
     return max(0, DAILY_REQUEST_BUDGET - used)
 
@@ -137,16 +144,9 @@ def _reserve_daily_slot(path: Path, daily_budget: int) -> bool:
         except (OSError, ValueError) as exc:
             log.error("[AI] Не удалось прочитать счётчик лимита OpenRouter (%s): %s", path, exc)
             return False
-        if not isinstance(data, dict):
-            log.error("[AI] Счётчик лимита OpenRouter имеет неверный формат: %s", path)
+        used = _daily_usage_count(data, today, path)
+        if used is None:
             return False
-        if data.get("date") == today:
-            used = data.get("requests")
-            if not isinstance(used, int) or isinstance(used, bool) or used < 0:
-                log.error("[AI] Счётчик запросов OpenRouter повреждён: %s", path)
-                return False
-        else:
-            used = 0
     else:
         used = 0
 

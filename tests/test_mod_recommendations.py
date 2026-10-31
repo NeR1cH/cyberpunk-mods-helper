@@ -1,5 +1,6 @@
 from argparse import Namespace
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tempfile
@@ -93,6 +94,21 @@ class OpenRouterLimitTests(unittest.TestCase):
                 per_run_budget=10,
             ))
             self.assertEqual(openrouter_limits.remaining_daily_requests(usage_path), 9)
+
+    def test_invalid_daily_request_count_is_rejected_by_reporting_and_reservation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            usage_path = Path(temp_dir) / "usage.json"
+            usage_path.write_text(json.dumps({
+                "date": datetime.now(timezone.utc).date().isoformat(),
+                "requests": True,
+            }), encoding="utf-8")
+
+            with self.assertLogs("modaudit", level="ERROR"):
+                self.assertIsNone(openrouter_limits.remaining_daily_requests(usage_path))
+
+            with patch.object(openrouter_limits, "_requests_this_process", 0):
+                with self.assertLogs("modaudit", level="ERROR"):
+                    self.assertFalse(openrouter_limits.reserve_request(usage_path))
 
     def test_cached_analysis_page_count_reports_new_page_progress(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
