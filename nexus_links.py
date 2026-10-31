@@ -1229,6 +1229,24 @@ def _apply_ai_batch_result(
     return received
 
 
+def _select_ai_work(
+    rows: list[ModRow],
+    include_known_ids: bool,
+) -> dict[str, tuple[str, list[str], list[Path]]]:
+    wanted: dict[str, tuple[str, list[str], list[Path]]] = {}
+    for row in rows:
+        if row.mod_id is not None and not include_known_ids:
+            continue
+        key = norm_title(row.title)
+        if key and key not in wanted:
+            wanted[key] = (
+                row.title,
+                [file.name for file in row.files][:2],
+                [file.path for file in row.files][:3],
+            )
+    return wanted
+
+
 def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
            online: bool) -> dict[str, AIInfo]:
     """Возвращает {norm_title: AIInfo}. Без online — только то, что уже лежит в кэше."""
@@ -1272,13 +1290,7 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
 
         # Сюда попадают все моды без подтверждённого ID — в том числе те, чей «ID» из имени
         # файла вышел за диапазон 1..MAX_MOD_ID и был отброшен при разборе имени.
-        wanted: dict[str, tuple[str, list[str], list[Path]]] = {}
-        for r in rows:
-            if r.mod_id is not None and not args.ai_all:
-                continue
-            k = norm_title(r.title)
-            if k and k not in wanted:
-                wanted[k] = (r.title, [f.name for f in r.files][:2], [f.path for f in r.files][:3])
+        wanted = _select_ai_work(rows, include_known_ids=args.ai_all)
         if not wanted:
             log.info("[AI] нет модов без распознанного ID; сетевой анализ и запись в кэш не требуются")
             return result

@@ -217,6 +217,45 @@ class AITests(unittest.TestCase):
         self.assertEqual(set(cache), {"first mod"})
         self.assertEqual(cache["first mod"]["model"], "test/model")
 
+    def test_ai_work_selection_deduplicates_titles_and_limits_local_file_metadata(self) -> None:
+        def make_row(title: str, mod_id: int | None, count: int) -> nexus_links.ModRow:
+            files = [
+                nexus_links.Archive(
+                    id=index,
+                    source="downloads",
+                    path=Path(f"private/user/mod-{index}.zip"),
+                    size=1,
+                    mtime=0,
+                    meta=nexus_links.ParsedName(title, mod_id),
+                )
+                for index in range(count)
+            ]
+            return nexus_links.ModRow(
+                mod_id,
+                title,
+                files,
+                "",
+                "",
+                [],
+                set(),
+                "",
+            )
+
+        rows = [
+            make_row("Example Mod", None, 4),
+            make_row("EXAMPLE MOD", None, 1),
+            make_row("Known Mod", 786, 1),
+        ]
+
+        selected = nexus_links._select_ai_work(rows, include_known_ids=False)
+        including_known = nexus_links._select_ai_work(rows, include_known_ids=True)
+
+        self.assertEqual(list(selected), ["example mod"])
+        self.assertEqual(selected["example mod"][0], "Example Mod")
+        self.assertEqual(selected["example mod"][1], ["mod-0.zip", "mod-1.zip"])
+        self.assertEqual(len(selected["example mod"][2]), 3)
+        self.assertEqual(list(including_known), ["example mod", "known mod"])
+
 
 class CleanSelectionTests(unittest.TestCase):
     def test_ai_max_requests_zero_disables_requests_and_negative_is_rejected(self) -> None:
