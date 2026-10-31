@@ -392,6 +392,36 @@ def _record_from_json(mod_id: int, raw: object) -> NexusModRecord | None:
     )
 
 
+def _recommendation_to_json(
+    recommendation: ModRecommendation | None,
+) -> dict[str, str | int | float] | None:
+    if recommendation is None:
+        return None
+    return {
+        "method": recommendation.method,
+        "category": recommendation.category,
+        "impact": recommendation.impact,
+        "confidence": recommendation.confidence,
+        "summary_ru": recommendation.summary_ru,
+        "rationale_ru": recommendation.rationale_ru,
+        "model": recommendation.model,
+        "analyzed_at": recommendation.analyzed_at,
+    }
+
+
+def _record_to_json(record: NexusModRecord) -> dict[str, object]:
+    return {
+        "name": record.name,
+        "summary": record.summary,
+        "description": record.description,
+        "category": record.category,
+        "tags": list(record.tags),
+        "fetched_at": record.fetched_at,
+        "error_code": record.error_code,
+        "recommendation": _recommendation_to_json(record.recommendation),
+    }
+
+
 def _load_analysis_cache(path: Path) -> dict[int, NexusModRecord]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -422,31 +452,10 @@ def _load_analysis_cache(path: Path) -> dict[int, NexusModRecord]:
 
 
 def _save_analysis_cache(records: dict[int, NexusModRecord], path: Path) -> None:
-    items: dict[str, dict] = {}
-    for mod_id, record in sorted(records.items()):
-        recommendation = record.recommendation
-        items[str(mod_id)] = {
-            "name": record.name,
-            "summary": record.summary,
-            "description": record.description,
-            "category": record.category,
-            "tags": list(record.tags),
-            "fetched_at": record.fetched_at,
-            "error_code": record.error_code,
-            "recommendation": (
-                {
-                    "method": recommendation.method,
-                    "category": recommendation.category,
-                    "impact": recommendation.impact,
-                    "confidence": recommendation.confidence,
-                    "summary_ru": recommendation.summary_ru,
-                    "rationale_ru": recommendation.rationale_ru,
-                    "model": recommendation.model,
-                    "analyzed_at": recommendation.analyzed_at,
-                }
-                if recommendation else None
-            ),
-        }
+    items = {
+        str(mod_id): _record_to_json(record)
+        for mod_id, record in sorted(records.items())
+    }
     try:
         path.write_text(
             json.dumps({"version": ANALYSIS_CACHE_VERSION, "items": items},

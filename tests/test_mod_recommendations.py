@@ -265,6 +265,35 @@ class InstallationNoteTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "допустимый размер"):
                 mod_recommendations._record_from_page_payload(1234, b"{}")
 
+    def test_analysis_cache_round_trip_preserves_optional_recommendation(self) -> None:
+        recommendation = mod_recommendations.ModRecommendation(
+            method="manual",
+            category="gameplay",
+            impact="medium",
+            confidence=75,
+            summary_ru="Меняет игровой процесс.",
+            rationale_ru="Автор описывает ручную установку.",
+            model="test/model",
+            analyzed_at=20,
+        )
+        record = mod_recommendations.NexusModRecord(
+            mod_id=1234,
+            name="Example mod",
+            summary="Short summary",
+            description="Full description",
+            category="Gameplay",
+            tags=("Gameplay", "Overhaul"),
+            fetched_at=10,
+            recommendation=recommendation,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "analysis-cache.json"
+            mod_recommendations._save_analysis_cache({1234: record}, cache_path)
+            restored = mod_recommendations._load_analysis_cache(cache_path)
+
+        self.assertEqual(restored, {1234: record})
+
     def test_public_page_request_uses_shared_bounded_request(self) -> None:
         response = MagicMock()
         response.__enter__.return_value = response
