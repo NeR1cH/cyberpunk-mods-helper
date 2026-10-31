@@ -3,11 +3,13 @@
 from dataclasses import dataclass
 import os
 from pathlib import Path
-from typing import Iterable, Protocol
+from typing import Iterable, Literal, Protocol
+
+ArchiveSourceName = Literal["downloads", "vortex"]
 
 
 class ArchiveSource(Protocol):
-    source: str
+    source: ArchiveSourceName
 
 
 class GroupFiles(Protocol):
@@ -25,7 +27,7 @@ class SourceSummary:
 
 @dataclass(frozen=True)
 class ScanRoot:
-    source: str
+    source: ArchiveSourceName
     folder: Path
     exclude: tuple[Path, ...] = ()
     warning: str = ""
@@ -36,16 +38,16 @@ def build_scan_plan(
     vortex: Path | None,
 ) -> list[ScanRoot]:
     """Avoid scanning the same physical files under both source labels."""
-    downloads_root = Path(os.path.realpath(downloads)) if downloads else None
-    vortex_root = Path(os.path.realpath(vortex)) if vortex else None
+    downloads_root = _resolve_root(downloads)
+    vortex_root = _resolve_root(vortex)
 
     if downloads_root is None:
-        return [ScanRoot("vortex", vortex_root)] if vortex_root else []
+        return [ScanRoot("vortex", vortex_root)] if vortex_root is not None else []
     if vortex_root is None:
         return [ScanRoot("downloads", downloads_root)]
 
-    downloads_key = os.path.normcase(str(downloads_root))
-    vortex_key = os.path.normcase(str(vortex_root))
+    downloads_key = _path_key(downloads_root)
+    vortex_key = _path_key(vortex_root)
     if downloads_key == vortex_key:
         return [ScanRoot(
             "downloads",
@@ -53,12 +55,8 @@ def build_scan_plan(
             warning="downloads и vortex указывают на одну папку; сканирую её один раз как Downloads",
         )]
 
-    try:
-        vortex_inside_downloads = os.path.commonpath([downloads_key, vortex_key]) == downloads_key
-        downloads_inside_vortex = os.path.commonpath([downloads_key, vortex_key]) == vortex_key
-    except ValueError:
-        vortex_inside_downloads = False
-        downloads_inside_vortex = False
+    vortex_inside_downloads = _is_inside(vortex_key, downloads_key)
+    downloads_inside_vortex = _is_inside(downloads_key, vortex_key)
 
     downloads_exclude = (vortex_root,) if vortex_inside_downloads else ()
     vortex_exclude = (downloads_root,) if downloads_inside_vortex else ()
@@ -66,6 +64,21 @@ def build_scan_plan(
         ScanRoot("downloads", downloads_root, downloads_exclude),
         ScanRoot("vortex", vortex_root, vortex_exclude),
     ]
+
+
+def _resolve_root(folder: Path | None) -> Path | None:
+    return Path(os.path.realpath(folder)) if folder is not None else None
+
+
+def _path_key(folder: Path) -> str:
+    return os.path.normcase(str(folder))
+
+
+def _is_inside(path: str, parent: str) -> bool:
+    try:
+        return os.path.commonpath([path, parent]) == parent
+    except ValueError:
+        return False
 
 
 def source_categories(sources: Iterable[str]) -> set[str]:
@@ -93,7 +106,7 @@ def summarize_sources(
     vortex_only_groups = 0
     both_source_groups = 0
     for group in groups:
-        sources = {archive.source for archive in group.files}
+        sources = _group_sources(group)
         if sources == {"downloads"}:
             downloads_only_groups += 1
         elif sources == {"vortex"}:
@@ -108,3 +121,7 @@ def summarize_sources(
         vortex_only_groups=vortex_only_groups,
         both_source_groups=both_source_groups,
     )
+
+
+def _group_sources(group: GroupFiles) -> set[ArchiveSourceName]:
+    return {archive.source for archive in group.files}

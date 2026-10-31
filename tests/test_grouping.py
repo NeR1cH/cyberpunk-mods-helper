@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 import nexus_links
-from mod_categories import build_scan_plan
+from mod_categories import build_scan_plan, source_categories, summarize_sources
 from mod_recommendations import InstallationNote
 
 
@@ -19,6 +19,31 @@ def archive(file_id: int, source: str, title: str, mod_id: int | None = None) ->
 
 
 class GroupingTests(unittest.TestCase):
+    def test_source_categories_only_match_vortex_exclusive_groups(self) -> None:
+        self.assertEqual(source_categories(["vortex"]), {"vortex"})
+        self.assertEqual(source_categories(["downloads"]), set())
+        self.assertEqual(source_categories(["downloads", "vortex"]), set())
+        self.assertEqual(source_categories([]), set())
+
+    def test_source_summary_consumes_archive_and_group_iterables_once(self) -> None:
+        files = [
+            archive(0, "downloads", "Downloads A", 1),
+            archive(1, "downloads", "Downloads B", 2),
+            archive(2, "vortex", "Vortex Only", 3),
+            archive(3, "downloads", "Shared", 4),
+            archive(4, "vortex", "Shared", 4),
+            archive(5, "other", "Other source", 5),
+        ]
+        groups = nexus_links.build_rows(files, {})
+
+        summary = summarize_sources(iter(files), iter(groups))
+
+        self.assertEqual(summary.downloads_archives, 3)
+        self.assertEqual(summary.vortex_archives, 2)
+        self.assertEqual(summary.downloads_only_groups, 2)
+        self.assertEqual(summary.vortex_only_groups, 1)
+        self.assertEqual(summary.both_source_groups, 1)
+
     def test_same_mod_id_in_both_sources_is_one_group(self) -> None:
         files = [
             archive(0, "downloads", "Sample Mod", 1234),
