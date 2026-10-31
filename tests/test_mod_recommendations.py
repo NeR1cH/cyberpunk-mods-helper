@@ -193,6 +193,30 @@ class AITests(unittest.TestCase):
         self.assertNotIn("private/user", prompt)
         self.assertEqual(digest.call_count, 2)
 
+    def test_ai_batch_result_ignores_boolean_and_out_of_range_indices(self) -> None:
+        batch = ["first mod", "second mod"]
+        items = [
+            {"i": True, "clean_title": "Incorrect", "conf": "high"},
+            {"i": 3, "clean_title": "Out of range", "conf": "high"},
+            {"i": 0, "clean_title": "First Mod", "conf": "high"},
+        ]
+        result: dict[str, nexus_links.AIInfo] = {}
+        cache: dict[str, dict] = {}
+
+        received = nexus_links._apply_ai_batch_result(
+            batch,
+            items,
+            "test/model",
+            result,
+            cache,
+        )
+
+        self.assertEqual(received, 1)
+        self.assertEqual(set(result), {"first mod"})
+        self.assertEqual(result["first mod"].en, "First Mod")
+        self.assertEqual(set(cache), {"first mod"})
+        self.assertEqual(cache["first mod"]["model"], "test/model")
+
 
 class CleanSelectionTests(unittest.TestCase):
     def test_ai_max_requests_zero_disables_requests_and_negative_is_rejected(self) -> None:

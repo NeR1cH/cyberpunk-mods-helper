@@ -1203,6 +1203,32 @@ def _build_ai_batch_payload(
     return "Определи моды:\n" + json.dumps(payload, ensure_ascii=False)
 
 
+def _apply_ai_batch_result(
+    batch: list[str],
+    items: list[dict],
+    model: str,
+    result: dict[str, AIInfo],
+    cache: dict[str, dict],
+) -> int:
+    received = 0
+    for item in items:
+        index = item.get("i")
+        if (
+            not isinstance(index, int)
+            or isinstance(index, bool)
+            or not 0 <= index < len(batch)
+        ):
+            continue
+        info = _to_info(item)
+        if not (info.en or info.ru or info.query):
+            continue
+        key = batch[index]
+        result[key] = info
+        cache[key] = {"info": info.__dict__, "model": model, "ts": int(time.time())}
+        received += 1
+    return received
+
+
 def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
            online: bool) -> dict[str, AIInfo]:
     """Возвращает {norm_title: AIInfo}. Без online — только то, что уже лежит в кэше."""
@@ -1279,18 +1305,7 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
                 if exc.fatal:
                     break
                 continue
-            got = 0
-            for obj in items:
-                idx = obj.get("i")
-                if not isinstance(idx, int) or not 0 <= idx < len(batch):
-                    continue
-                info = _to_info(obj)
-                if not (info.en or info.ru or info.query):
-                    continue
-                k = batch[idx]
-                result[k] = info
-                cache[k] = {"info": info.__dict__, "model": model, "ts": int(time.time())}
-                got += 1
+            got = _apply_ai_batch_result(batch, items, model, result, cache)
             if model in models and models[0] != model:
                 models = [model, *(candidate for candidate in models if candidate != model)]
             save_ai_cache(cache)  # после каждой пачки: прогресс не пропадёт при сбое
