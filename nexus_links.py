@@ -531,6 +531,28 @@ def parse_library_folders(vdf_text: str) -> list[Path]:
             for p in re.findall(r'"path"\s+"([^"]+)"', vdf_text)]
 
 
+def _steam_libraries(root: Path) -> list[Path]:
+    libraries = [root]
+    try:
+        vdf_path = root / "steamapps" / "libraryfolders.vdf"
+        libraries.extend(parse_library_folders(vdf_path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        )))
+    except OSError:
+        pass
+    return libraries
+
+
+def _find_cyberpunk_in_steam_roots(roots: Iterable[Path]) -> Optional[Path]:
+    for root in roots:
+        for library in _steam_libraries(root):
+            candidate = library / "steamapps" / "common" / "Cyberpunk 2077"
+            if candidate.is_dir():
+                return candidate
+    return None
+
+
 def find_cyberpunk_install() -> Optional[Path]:
     """Ищет игру в библиотеках Steam (реестр + libraryfolders.vdf)."""
     roots: list[Path] = []
@@ -543,18 +565,7 @@ def find_cyberpunk_install() -> Optional[Path]:
     for env in ("ProgramFiles(x86)", "ProgramFiles"):
         if os.environ.get(env):
             roots.append(Path(os.environ[env]) / "Steam")
-    for root in roots:
-        libs = [root]
-        try:
-            libs += parse_library_folders((root / "steamapps" / "libraryfolders.vdf")
-                                          .read_text(encoding="utf-8", errors="replace"))
-        except OSError:
-            pass
-        for lib in libs:
-            cand = lib / "steamapps" / "common" / "Cyberpunk 2077"
-            if cand.is_dir():
-                return cand
-    return None
+    return _find_cyberpunk_in_steam_roots(roots)
 
 
 # ==================== АНАЛИЗ ====================

@@ -317,6 +317,25 @@ class GroupingTests(unittest.TestCase):
         self.assertEqual(plan[0].exclude, ())
         self.assertEqual(plan[1].exclude, ())
 
+    def test_steam_game_lookup_checks_libraries_from_vdf(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            steam_root = root / "Steam"
+            secondary_library = root / "Library"
+            game = secondary_library / "steamapps" / "common" / "Cyberpunk 2077"
+            game.mkdir(parents=True)
+            vdf = steam_root / "steamapps" / "libraryfolders.vdf"
+            vdf.parent.mkdir(parents=True)
+            escaped_library = str(secondary_library).replace("\\", "\\\\")
+            vdf.write_text(
+                f'"libraryfolders" {{ "1" {{ "path" "{escaped_library}" }} }}',
+                encoding="utf-8",
+            )
+
+            found = nexus_links._find_cyberpunk_in_steam_roots([steam_root])
+
+        self.assertEqual(found, game)
+
     def test_author_install_note_is_optional_and_html_escaped(self) -> None:
         note = InstallationNote(
             mod_id=1234,
