@@ -1841,17 +1841,14 @@ def load_settings(args: argparse.Namespace) -> Settings:
 
 # ==================== КОМАНДА scan ====================
 
-def cmd_scan(args: argparse.Namespace) -> int:
-    s = load_settings(args)
-    if not (s.downloads or s.vortex):
-        log.error("Не заданы папки. Укажите --downloads/--vortex или заполните config.json "
-                  "(пример — config.example.json).")
-        return 2
-
+def _scan_archive_roots(
+    downloads: Optional[Path],
+    vortex: Optional[Path],
+) -> tuple[list[Archive], int]:
     archives: list[Archive] = []
     scanned_folders = 0
     scan_labels = {"downloads": "Downloads", "vortex": "Vortex"}
-    for root in build_scan_plan(s.downloads, s.vortex):
+    for root in build_scan_plan(downloads, vortex):
         label = scan_labels[root.source]
         folder = root.folder
         if root.warning:
@@ -1864,6 +1861,17 @@ def cmd_scan(args: argparse.Namespace) -> int:
         found = scan_folder(folder, root.source, start_id=len(archives), exclude=root.exclude)
         archives += found
         log.info("[*] Архивов найдено в %s: %d", label, len(found))
+    return archives, scanned_folders
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    s = load_settings(args)
+    if not (s.downloads or s.vortex):
+        log.error("Не заданы папки. Укажите --downloads/--vortex или заполните config.json "
+                  "(пример — config.example.json).")
+        return 2
+
+    archives, scanned_folders = _scan_archive_roots(s.downloads, s.vortex)
     if not scanned_folders:
         log.error("Не найдена ни одна папка для сканирования. Проверьте downloads/vortex в config.json.")
         return 2

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import nexus_links
 from mod_categories import build_scan_plan, source_categories, summarize_sources
@@ -19,6 +20,32 @@ def archive(file_id: int, source: str, title: str, mod_id: int | None = None) ->
 
 
 class GroupingTests(unittest.TestCase):
+    def test_archive_root_scan_preserves_order_ids_and_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            downloads = root / "Downloads"
+            vortex = root / "Vortex"
+            downloads.mkdir()
+            vortex.mkdir()
+            download_archive = archive(0, "downloads", "Download Mod", 1)
+            vortex_archive = archive(1, "vortex", "Vortex Mod", 2)
+
+            with patch(
+                "nexus_links.scan_folder",
+                side_effect=[[download_archive], [vortex_archive]],
+            ) as scan_folder:
+                found, scanned_count = nexus_links._scan_archive_roots(downloads, vortex)
+
+        self.assertEqual(found, [download_archive, vortex_archive])
+        self.assertEqual(scanned_count, 2)
+        calls = scan_folder.call_args_list
+        self.assertEqual(calls[0].args, (downloads.resolve(), "downloads"))
+        self.assertEqual(calls[0].kwargs["start_id"], 0)
+        self.assertEqual(calls[0].kwargs["exclude"], ())
+        self.assertEqual(calls[1].args, (vortex.resolve(), "vortex"))
+        self.assertEqual(calls[1].kwargs["start_id"], 1)
+        self.assertEqual(calls[1].kwargs["exclude"], ())
+
     def test_source_categories_only_match_vortex_exclusive_groups(self) -> None:
         self.assertEqual(source_categories(["vortex"]), {"vortex"})
         self.assertEqual(source_categories(["downloads"]), set())
