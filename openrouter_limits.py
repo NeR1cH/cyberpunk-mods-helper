@@ -65,7 +65,7 @@ def reserve_request(
     with _reservation_lock:
         if _requests_this_process >= per_run_budget:
             log.warning(
-                "[AI] Достигнут лимит OpenRouter за запуск: %d попытки. "
+                "[AI] Достигнут внутренний лимит приложения за запуск: %d попытки OpenRouter. "
                 "Остальной анализ продолжится при следующем запуске.",
                 per_run_budget,
             )
@@ -152,7 +152,7 @@ def _reserve_daily_slot(path: Path, daily_budget: int) -> bool:
 
     if used >= daily_budget:
         log.warning(
-            "[AI] Достигнут безопасный лимит OpenRouter: %d попыток за UTC-сутки. "
+            "[AI] Достигнут внутренний дневной лимит приложения: %d попыток OpenRouter за UTC-сутки. "
             "Сканирование продолжится без новых запросов.",
             daily_budget,
         )
@@ -177,7 +177,7 @@ def _reserve_daily_slot(path: Path, daily_budget: int) -> bool:
 
 
 def wait_for_request_slot() -> None:
-    """Keep calls from this process below the common free-tier per-minute rate."""
+    """Apply the app's minimum interval between outbound model requests."""
     global _last_request_at
     elapsed = time.monotonic() - _last_request_at
     wait = MIN_REQUEST_INTERVAL_SECONDS - elapsed

@@ -24,6 +24,7 @@ import hashlib
 import html
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -819,9 +820,9 @@ def load_blacklist(path: Path = BLACKLIST_PATH) -> dict[int, str]:
 # (в том числе по русскому) и по его составу (.archive, .reds, .yaml, папки r6/scripts).
 # Mod ID от неё принимается только в диапазоне 1..MAX_MOD_ID и не раньше проверки
 # человеком: он НЕ становится ModRow.mod_id (группировка, чёрный список), а показывается
-# отдельной ссылкой «≈ #ID ИИ» рядом с поиском Nexus. Бесплатный лимит OpenRouter — 20 запросов/мин и
-# 50 запросов/сутки, поэтому моды отправляются пачками, а ответы кэшируются
-# в ai_cache.json (повторный запуск не тратит запросы).
+# отдельной ссылкой «≈ #ID ИИ» рядом с поиском Nexus. Фактические квоты OpenRouter зависят
+# от аккаунта и модели. Приложение отдельно ограничивает
+# собственные попытки, а ответы кэшируются в ai_cache.json.
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 AI_CACHE_PATH = SCRIPT_DIR / "ai_cache.json"
@@ -831,9 +832,8 @@ DEFAULT_AI_MODELS = [
     "nvidia/nemotron-3-nano-30b-a3b:free",
 ]
 AI_BATCH_SIZE = 20          # модов в одном запросе
-AI_MIN_INTERVAL = 3.5       # сек между запросами (лимит free — 20 в минуту)
 AI_TIMEOUT = 120
-AI_DEFAULT_MAX_REQUESTS = 8  # за один запуск; суточный лимит free-аккаунта — 50
+AI_DEFAULT_MAX_REQUESTS = 8  # внутренний максимум пачек за один запуск
 
 AI_SYSTEM_PROMPT_TEMPLATE = (
     "Ты определяешь настоящее английское название мода для Cyberpunk 2077 на Nexus Mods по названию "
@@ -932,7 +932,8 @@ def _ai_ask(
     for model in models:
         if not reserve_request():
             raise AIError(
-                "Достигнут безопасный лимит запросов OpenRouter за запуск или UTC-сутки.",
+                "Достигнут внутренний лимит приложения на запросы OpenRouter "
+                "за запуск или UTC-сутки.",
                 fatal=True,
             )
         wait_for_request_slot()
@@ -1107,8 +1108,25 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
                             "или \"ai\": {\"api_key\": \"...\"} в config.json. Показываю только кэш.")
             return result
 
-        models = [args.ai_model] if args.ai_model else (ai_cfg.get("models") or DEFAULT_AI_MODELS)
-        max_requests = args.ai_max_requests or int(ai_cfg.get("max_requests") or AI_DEFAULT_MAX_REQUESTS)
+        configured_models = ai_cfg.get("models")
+        if not isinstance(configured_models, list) or not configured_models:
+            configured_models = DEFAULT_AI_MODELS
+        models_value = [args.ai_model] if args.ai_model else configured_models
+        models = [str(model) for model in models_value if str(model).strip()]
+        if not models:
+            log.error("[AI] Список моделей OpenRouter пуст.")
+            return result
+
+        max_requests = getattr(args, "ai_max_requests", None)
+        if max_requests is None:
+            configured_max_requests = ai_cfg.get("max_requests", AI_DEFAULT_MAX_REQUESTS)
+            if (not isinstance(configured_max_requests, int)
+                    or isinstance(configured_max_requests, bool)
+                    or configured_max_requests < 0):
+                log.warning("[AI] Некорректный ai.max_requests; использую значение по умолчанию: %d",
+                            AI_DEFAULT_MAX_REQUESTS)
+                configured_max_requests = AI_DEFAULT_MAX_REQUESTS
+            max_requests = configured_max_requests
 
         # Сюда попадают все моды без подтверждённого ID — в том числе те, чей «ID» из имени
         # файла вышел за диапазон 1..MAX_MOD_ID и был отброшен при разборе имени.
@@ -1136,16 +1154,11 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
                      max_requests, len(batches))
             batches = batches[:max_requests]
 
-        last_call = 0.0
         for n, batch in enumerate(batches, 1):
             payload = [{"i": i, "title": wanted[k][0], "files": wanted[k][1],
                         "contents": archive_digest(wanted[k][2])} for i, k in enumerate(batch)]
-            wait = AI_MIN_INTERVAL - (time.monotonic() - last_call)
-            if wait > 0:
-                time.sleep(wait)
             log.info("[AI] пачка %d/%d (%d шт.)…", n, len(batches), len(batch))
             try:
-                last_call = time.monotonic()
                 model, items = _ai_ask(models, key, "Определи моды:\n" + json.dumps(payload, ensure_ascii=False))
             except AIError as exc:
                 log.warning("[AI] %s", exc)
@@ -1232,13 +1245,8 @@ def run_nexus_ai_analysis(
         "[Nexus AI] ИИ получает только публичные данные страниц Nexus; "
         "имена архивов и локальные пути не отправляются."
     )
-    last_call = 0.0
     for batch_index, batch in enumerate(batches, 1):
-        wait = AI_MIN_INTERVAL - (time.monotonic() - last_call)
-        if wait > 0:
-            time.sleep(wait)
         try:
-            last_call = time.monotonic()
             model, items = _ai_ask(
                 models,
                 key,
@@ -1666,10 +1674,14 @@ def load_settings(args: argparse.Namespace) -> Settings:
     cfg_path = _as_path(getattr(args, "config", None)) or CONFIG_PATH
     if cfg_path.is_file():
         try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+            loaded_cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError) as exc:
             log.error("Не удалось прочитать %s: %s", cfg_path, exc)
             sys.exit(2)
+        if not isinstance(loaded_cfg, dict):
+            log.error("В %s ожидается JSON-объект с настройками.", cfg_path)
+            sys.exit(2)
+        cfg = loaded_cfg
 
     custom_max = cfg.get("max_mod_id")
     if isinstance(custom_max, int) and not isinstance(custom_max, bool) and custom_max >= 1:
@@ -1781,10 +1793,40 @@ def _inside(path: Path, parent: Path) -> bool:
         return False
 
 
-def verify_entry(entry: dict, downloads: Path, quarantine: Path, verify_hash: bool) -> Optional[str]:
+def verify_entry(
+    entry: object,
+    downloads: Path,
+    quarantine: Path,
+    verify_hash: bool,
+) -> Optional[str]:
     """Возвращает текст ошибки, если файл трогать нельзя, иначе None."""
-    path = Path(entry.get("path", ""))
-    keeper = Path(entry["keeper"]) if entry.get("keeper") else None
+    if not isinstance(entry, dict):
+        return "неверный формат записи"
+    path_value = entry.get("path")
+    keeper_value = entry.get("keeper")
+    size = entry.get("size")
+    raw_mtime = entry.get("mtime")
+    reason = entry.get("reason")
+    if (
+        not isinstance(path_value, str) or not path_value or "\0" in path_value
+        or not isinstance(keeper_value, str) or not keeper_value or "\0" in keeper_value
+        or not isinstance(size, int) or isinstance(size, bool) or size < 0
+        or not isinstance(reason, str) or reason not in {EXACT_DUP, OLDER}
+        or isinstance(raw_mtime, bool)
+    ):
+        return "неверные поля записи"
+    try:
+        mtime = float(raw_mtime)
+    except (TypeError, ValueError, OverflowError):
+        return "неверная дата изменения в записи"
+    if not math.isfinite(mtime):
+        return "неверная дата изменения в записи"
+    sha256 = entry.get("sha256")
+    if sha256 is not None and not isinstance(sha256, str):
+        return "неверный SHA-256 в записи"
+
+    path = Path(path_value)
+    keeper = Path(keeper_value)
     if path.suffix.lower() not in EXTENSIONS:
         return "не архив мода"
     if not _inside(path, downloads):
@@ -1793,18 +1835,29 @@ def verify_entry(entry: dict, downloads: Path, quarantine: Path, verify_hash: bo
         return "уже в карантине"
     if not path.is_file():
         return "файл не найден"
-    st = path.stat()
-    if st.st_size != entry.get("size") or abs(st.st_mtime - float(entry.get("mtime", 0))) > 2:
+    try:
+        st = path.stat()
+    except OSError:
+        return "не удалось прочитать файл"
+    if st.st_size != size or abs(st.st_mtime - mtime) > 2:
         return "файл изменился после сканирования"
-    if keeper is None or not keeper.is_file():
+    if not keeper.is_file():
         return "не найден файл, который должен остаться"
     if keeper.resolve() == path.resolve():
         return "файл совпадает с «остающимся»"
     if entry.get("reason") == EXACT_DUP and verify_hash:
-        if keeper.stat().st_size != st.st_size:
+        try:
+            keeper_size = keeper.stat().st_size
+        except OSError:
+            return "не удалось прочитать остающийся файл"
+        if keeper_size != st.st_size:
             return "размер остающегося файла не совпадает"
-        h = sha256_file(path)
-        if h != sha256_file(keeper) or (entry.get("sha256") and h != entry["sha256"]):
+        try:
+            h = sha256_file(path)
+            keeper_hash = sha256_file(keeper)
+        except OSError:
+            return "не удалось проверить SHA-256"
+        if h != keeper_hash or (sha256 and h != sha256):
             return "SHA-256 не совпадает с остающимся файлом"
     return None
 
@@ -1817,7 +1870,11 @@ def cmd_clean(args: argparse.Namespace) -> int:
         return 2
     try:
         data = json.loads(Path(args.selection).read_text(encoding="utf-8-sig"))
-        entries = list(data["files"])
+        if not isinstance(data, dict) or not isinstance(data.get("files"), list):
+            raise ValueError("ожидается объект JSON с массивом files")
+        entries = data["files"]
+        if any(not isinstance(entry, dict) for entry in entries):
+            raise ValueError("каждый элемент files должен быть объектом")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         log.error("Не удалось прочитать список очистки: %s", exc)
         return 2
@@ -1912,7 +1969,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--ai-all", action="store_true", help="ИИ-анализ для всех модов, не только без ID")
     p_scan.add_argument("--ai-refresh", action="store_true", help="игнорировать кэш ИИ и спросить заново")
     p_scan.add_argument("--ai-model", help="id модели OpenRouter (по умолчанию — бесплатные NVIDIA Nemotron)")
-    p_scan.add_argument("--ai-max-requests", type=int, default=0,
+    p_scan.add_argument("--ai-max-requests", type=nonnegative_int, default=None,
                         help=f"максимум запросов за запуск (по умолчанию {AI_DEFAULT_MAX_REQUESTS})")
     p_scan.add_argument("--nexus-details", action="store_true",
                         help="получить с Nexus подсказки автора по установке (опционально, без ключа API)")

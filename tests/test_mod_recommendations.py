@@ -105,6 +105,81 @@ class OpenRouterLimitTests(unittest.TestCase):
             self.assertEqual(openrouter_limits.cached_analysis_page_count(cache_path), 2)
 
 
+class CleanSelectionTests(unittest.TestCase):
+    def test_ai_max_requests_zero_disables_requests_and_negative_is_rejected(self) -> None:
+        parser = nexus_links.build_parser()
+        args = parser.parse_args(["scan", "--ai", "--ai-max-requests", "0"])
+        rows = [Namespace(mod_id=None, title="Example mod", files=[])]
+        settings = Namespace(cfg={"ai": {"api_key": "test-key"}})
+
+        with patch("nexus_links.load_ai_cache", return_value={}):
+            with patch("nexus_links._ai_ask") as ask:
+                nexus_links.run_ai(rows, settings, args, online=True)
+
+        ask.assert_not_called()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["scan", "--ai-max-requests", "-1"])
+
+    def test_clean_rejects_non_object_selection_before_processing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            selection_path = root / "selection.json"
+            selection_path.write_text("[]", encoding="utf-8")
+            settings = nexus_links.Settings(
+                downloads=root / "downloads",
+                vortex=None,
+                game=None,
+                out=root / "report.html",
+                quarantine=root / "quarantine",
+            )
+            args = Namespace(
+                selection=str(selection_path),
+                no_verify=False,
+                apply=False,
+                mode="quarantine",
+            )
+
+            with patch("nexus_links.load_settings", return_value=settings):
+                with self.assertLogs("modaudit", level="ERROR"):
+                    self.assertEqual(nexus_links.cmd_clean(args), 2)
+
+    def test_verify_entry_rejects_malformed_fields_without_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            entry = {
+                "path": str(root / "mod.zip"),
+                "keeper": str(root / "keeper.zip"),
+                "size": 1,
+                "mtime": [],
+                "reason": nexus_links.EXACT_DUP,
+            }
+
+            self.assertIsNotNone(
+                nexus_links.verify_entry(entry, root, root / "quarantine", verify_hash=True)
+            )
+
+    def test_verify_entry_accepts_valid_exported_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            candidate = root / "candidate.zip"
+            keeper = root / "keeper.zip"
+            candidate.write_bytes(b"same contents")
+            keeper.write_bytes(b"same contents")
+            stat = candidate.stat()
+            entry = {
+                "path": str(candidate),
+                "keeper": str(keeper),
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "sha256": nexus_links.sha256_file(candidate),
+                "reason": nexus_links.EXACT_DUP,
+            }
+
+            self.assertIsNone(
+                nexus_links.verify_entry(entry, root, root / "quarantine", verify_hash=True)
+            )
+
+
 class InstallationNoteTests(unittest.TestCase):
     def test_manual_install_instructions_are_preserved(self) -> None:
         note = mod_recommendations.extract_installation_note(
