@@ -629,48 +629,64 @@ def mark_versions(archives: list[Archive]) -> None:
             groups[(a.meta.mod_id, norm_title(a.meta.title))].append(a)
 
     for items in groups.values():
-        if len(items) < 2:
+        _mark_version_group(items, by_id)
+
+
+def _mark_version_group(items: list[Archive], by_id: dict[int, Archive]) -> None:
+    if len(items) < 2:
+        return
+
+    def newer_than(archive: Archive) -> list[Archive]:
+        return [
+            candidate for candidate in items
+            if candidate is not archive
+            and compare_freshness(archive.meta, candidate.meta) == -1
+        ]
+
+    marked = [
+        archive for archive in items
+        if archive.source == "downloads"
+        and archive.verdict == KEEP
+        and newer_than(archive)
+    ]
+    for archive in marked:
+        archive.verdict = OLDER
+
+    for archive in marked:
+        finals: list[tuple[Archive, Archive]] = []
+        for candidate in newer_than(archive):
+            if candidate.verdict == EXACT_DUP and candidate.keeper is not None:
+                finals.append((candidate, by_id[candidate.keeper]))
+            elif candidate.verdict != OLDER:
+                finals.append((candidate, candidate))
+        if not finals:
+            archive.verdict = KEEP
             continue
+        best = finals[0]
+        for candidate in finals[1:]:
+            if compare_freshness(best[0].meta, candidate[0].meta) == -1:
+                best = candidate
+        archive.keeper = best[1].id
+        version = best[0].meta.version or "?"
+        archive.note = f"Есть новее: {best[1].name} (v{version}, {best[1].source})"
 
-        def newer_than(a: Archive) -> list[Archive]:
-            return [b for b in items if b is not a and compare_freshness(a.meta, b.meta) == -1]
-
-        # 1-й проход: помечаем всех, у кого есть более новый файл.
-        marked = [a for a in items
-                  if a.source == "downloads" and a.verdict == KEEP and newer_than(a)]
-        for a in marked:
-            a.verdict = OLDER
-        # 2-й проход: остающийся файл — самый свежий из не помеченных
-        # (для точных копий — тот, на кого они ссылаются).
-        for a in marked:
-            finals: list[tuple[Archive, Archive]] = []
-            for b in newer_than(a):
-                if b.verdict == EXACT_DUP and b.keeper is not None:
-                    finals.append((b, by_id[b.keeper]))
-                elif b.verdict != OLDER:
-                    finals.append((b, b))
-            if not finals:
-                a.verdict = KEEP
-                continue
-            best = finals[0]
-            for cand in finals[1:]:
-                if compare_freshness(best[0].meta, cand[0].meta) == -1:
-                    best = cand
-            a.keeper = best[1].id
-            ver = best[0].meta.version or "?"
-            a.note = f"Есть новее: {best[1].name} (v{ver}, {best[1].source})"
-
-        # Информационные пометки Downloads новее Vortex.
-        for a in items:
-            if a.source != "downloads" or a.verdict != KEEP:
-                continue
-            for b in items:
-                if b.source == "vortex" and b.verdict == KEEP and compare_freshness(a.meta, b.meta) == 1:
-                    a.verdict = NEWER
-                    a.note = f"Новее, чем в Vortex (v{b.meta.version or '?'}) — обновите мод в Vortex"
-                    b.verdict = STALE
-                    b.note = f"В Downloads есть более новый архив: {a.name}"
-                    break
+    for archive in items:
+        if archive.source != "downloads" or archive.verdict != KEEP:
+            continue
+        for candidate in items:
+            if (
+                candidate.source == "vortex"
+                and candidate.verdict == KEEP
+                and compare_freshness(archive.meta, candidate.meta) == 1
+            ):
+                archive.verdict = NEWER
+                archive.note = (
+                    f"Новее, чем в Vortex (v{candidate.meta.version or '?'}) — "
+                    "обновите мод в Vortex"
+                )
+                candidate.verdict = STALE
+                candidate.note = f"В Downloads есть более новый архив: {archive.name}"
+                break
 
 
 def common_title(files: list[Archive]) -> str:

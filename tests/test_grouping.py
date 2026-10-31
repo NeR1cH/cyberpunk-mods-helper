@@ -262,6 +262,42 @@ class GroupingTests(unittest.TestCase):
         self.assertEqual(archives[1].verdict, nexus_links.KEEP)
         self.assertIn("в Downloads", archives[0].note)
 
+    def test_version_scan_marks_older_download_and_chooses_newer_keeper(self) -> None:
+        older = archive(0, "downloads", "Sample Mod", 1234)
+        older.meta = nexus_links.ParsedName("Sample Mod", 1234, version="1.0", ts=100)
+        newer = archive(1, "downloads", "Sample Mod", 1234)
+        newer.meta = nexus_links.ParsedName("Sample Mod", 1234, version="2.0", ts=200)
+
+        nexus_links.mark_versions([older, newer])
+
+        self.assertEqual(older.verdict, nexus_links.OLDER)
+        self.assertEqual(older.keeper, newer.id)
+        self.assertIn(newer.name, older.note)
+        self.assertEqual(newer.verdict, nexus_links.KEEP)
+
+    def test_version_scan_marks_download_newer_than_vortex(self) -> None:
+        downloaded = archive(0, "downloads", "Sample Mod", 1234)
+        downloaded.meta = nexus_links.ParsedName(
+            "Sample Mod",
+            1234,
+            version="2.0",
+            ts=200,
+        )
+        installed_archive = archive(1, "vortex", "Sample Mod", 1234)
+        installed_archive.meta = nexus_links.ParsedName(
+            "Sample Mod",
+            1234,
+            version="1.0",
+            ts=100,
+        )
+
+        nexus_links.mark_versions([downloaded, installed_archive])
+
+        self.assertEqual(downloaded.verdict, nexus_links.NEWER)
+        self.assertEqual(installed_archive.verdict, nexus_links.STALE)
+        self.assertIn("обновите мод в Vortex", downloaded.note)
+        self.assertIn(downloaded.name, installed_archive.note)
+
     def test_nested_source_roots_exclude_inner_root_from_outer_scan(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
