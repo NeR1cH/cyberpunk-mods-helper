@@ -217,15 +217,18 @@ def _save_cache(items: dict[int, InstallationNote], path: Path) -> None:
         log.info("[Nexus] Кэш подсказок сохранён: %s (%d записей)", path, len(items))
 
 
-def _fetch_note(mod_id: int) -> InstallationNote | None:
-    url = NEXUS_API_URL.format(mod_id=mod_id)
+def _request_mod_page(mod_id: int) -> bytes:
     request = urllib.request.Request(
-        url,
+        NEXUS_API_URL.format(mod_id=mod_id),
         headers={"Accept": "application/json", "User-Agent": "Cyberpunk-Mod-Auditor"},
     )
+    with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        return response.read(MAX_DESCRIPTION_BYTES + 1)
+
+
+def _fetch_note(mod_id: int) -> InstallationNote | None:
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            payload = response.read(MAX_DESCRIPTION_BYTES + 1)
+        payload = _request_mod_page(mod_id)
     except urllib.error.HTTPError as exc:
         log.warning("[Nexus] Не удалось получить описание мода #%d: HTTP %d", mod_id, exc.code)
         if exc.code in {403, 404, 451}:
@@ -472,14 +475,8 @@ def fetch_nexus_mod_records(
 
     updated = 0
     for index, mod_id in enumerate(request_ids):
-        url = NEXUS_API_URL.format(mod_id=mod_id)
-        request = urllib.request.Request(
-            url,
-            headers={"Accept": "application/json", "User-Agent": "Cyberpunk-Mod-Auditor"},
-        )
         try:
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-                payload = response.read(MAX_DESCRIPTION_BYTES + 1)
+            payload = _request_mod_page(mod_id)
             if len(payload) > MAX_DESCRIPTION_BYTES:
                 raise ValueError("ответ превышает допустимый размер")
             body = json.loads(payload.decode("utf-8"))

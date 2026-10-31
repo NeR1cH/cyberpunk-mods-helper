@@ -181,6 +181,29 @@ class CleanSelectionTests(unittest.TestCase):
 
 
 class InstallationNoteTests(unittest.TestCase):
+    def test_public_page_request_uses_shared_bounded_request(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.read.return_value = b'{"data": {}}'
+
+        with patch("mod_recommendations.urllib.request.urlopen", return_value=response) as urlopen:
+            payload = mod_recommendations._request_mod_page(786)
+
+        self.assertEqual(payload, b'{"data": {}}')
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://api.nexusmods.com/v3/games/cyberpunk2077/mods/786",
+        )
+        self.assertEqual(request.get_header("Accept"), "application/json")
+        self.assertEqual(request.get_header("User-agent"), "Cyberpunk-Mod-Auditor")
+        self.assertEqual(
+            urlopen.call_args.kwargs["timeout"],
+            mod_recommendations.REQUEST_TIMEOUT_SECONDS,
+        )
+        response.read.assert_called_once_with(mod_recommendations.MAX_DESCRIPTION_BYTES + 1)
+
     def test_manual_install_instructions_are_preserved(self) -> None:
         note = mod_recommendations.extract_installation_note(
             786,
