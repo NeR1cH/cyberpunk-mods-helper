@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 
 import nexus_links
+from mod_categories import build_scan_plan
+from mod_recommendations import InstallationNote
 
 
 def archive(file_id: int, source: str, title: str, mod_id: int | None = None) -> nexus_links.Archive:
@@ -112,6 +114,88 @@ class GroupingTests(unittest.TestCase):
             [item.path for item in first],
             [item.path for item in second],
         )
+
+    def test_nested_source_roots_exclude_inner_root_from_outer_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            downloads = root / "Downloads"
+            vortex = downloads / "Vortex"
+            vortex.mkdir(parents=True)
+            (downloads / "manual.zip").write_bytes(b"manual")
+            (vortex / "managed.zip").write_bytes(b"managed")
+
+            plan = build_scan_plan(downloads, vortex)
+
+            self.assertEqual([item.source for item in plan], ["downloads", "vortex"])
+            self.assertEqual(plan[0].exclude, (vortex.resolve(),))
+            self.assertEqual(plan[1].exclude, ())
+            archives = [
+                archive
+                for item in plan
+                for archive in nexus_links.scan_folder(
+                    item.folder,
+                    item.source,
+                    exclude=item.exclude,
+                )
+            ]
+            self.assertEqual(
+                {(item.source, item.path.name) for item in archives},
+                {("downloads", "manual.zip"), ("vortex", "managed.zip")},
+            )
+
+            reverse_plan = build_scan_plan(vortex, downloads)
+
+            self.assertEqual(reverse_plan[0].exclude, ())
+            self.assertEqual(reverse_plan[1].exclude, (vortex.resolve(),))
+
+    def test_identical_source_roots_are_scanned_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            plan = build_scan_plan(root, root / ".")
+
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0].source, "downloads")
+        self.assertIn("сканирую её один раз", plan[0].warning)
+
+    def test_disjoint_source_roots_are_scanned_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            downloads = root / "Downloads"
+            vortex = root / "Vortex"
+
+            plan = build_scan_plan(downloads, vortex)
+
+        self.assertEqual([item.source for item in plan], ["downloads", "vortex"])
+        self.assertEqual(plan[0].exclude, ())
+        self.assertEqual(plan[1].exclude, ())
+
+    def test_author_install_note_is_optional_and_html_escaped(self) -> None:
+        note = InstallationNote(
+            mod_id=1234,
+            method="manual",
+            excerpt="Copy <script>alert(1)</script> into the game folder.",
+            checked_at=0,
+        )
+
+        rendered = nexus_links.render_installation_note(note)
+
+        self.assertIn("автор описывает ручную установку", rendered)
+        self.assertIn("&lt;script&gt;", rendered)
+        self.assertNotIn("<script>", rendered)
+        self.assertIn("nexusmods.com/cyberpunk2077/mods/1234", rendered)
+
+        row = nexus_links.build_rows(
+            [archive(0, "downloads", "Sample Mod", 1234)],
+            {},
+        )[0]
+        rendered_row = nexus_links.render_row(
+            row,
+            {0: 0},
+            installation_notes={1234: note},
+        )
+        self.assertIn("По описанию автора", rendered_row)
+        self.assertIn("&lt;script&gt;", rendered_row)
 
 
 if __name__ == "__main__":

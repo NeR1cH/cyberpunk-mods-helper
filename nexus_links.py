@@ -32,7 +32,7 @@ import time
 import webbrowser
 import zipfile
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
@@ -40,7 +40,27 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote, quote_plus
 
-from mod_categories import source_categories, summarize_sources
+from mod_categories import build_scan_plan, source_categories, summarize_sources
+from openrouter_limits import (
+    block_remaining_requests_this_run,
+    reserve_request,
+    wait_for_request_slot,
+)
+from mod_recommendations import (
+    InstallationNote,
+    NexusModRecord,
+    ANALYSIS_BATCH_SIZE,
+    ANALYSIS_SYSTEM_PROMPT,
+    analysis_label,
+    build_analysis_payload,
+    extract_installation_note,
+    fetch_nexus_mod_records,
+    format_checked_date,
+    load_installation_notes,
+    method_label,
+    parse_recommendations,
+    save_nexus_mod_records,
+)
 
 log = logging.getLogger("modaudit")
 
@@ -825,17 +845,29 @@ def _parse_ai_json(text: str) -> Optional[list[dict]]:
     return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else None
 
 
-def _ai_ask(models: list[str], key: str, user_text: str) -> tuple[str, list[dict]]:
+def _ai_ask(
+    models: list[str],
+    key: str,
+    user_text: str,
+    system_prompt: Optional[str] = None,
+    max_tokens: int = 8000,
+) -> tuple[str, list[dict]]:
     """Пробует модели по очереди. Возвращает (модель, список объектов)."""
     last: Optional[AIError] = None
     for model in models:
+        if not reserve_request():
+            raise AIError(
+                "Достигнут безопасный лимит запросов OpenRouter за запуск или UTC-сутки.",
+                fatal=True,
+            )
+        wait_for_request_slot()
         try:
             data = _http_json(f"{OPENROUTER_BASE}/chat/completions", key, {
                 "model": model,
-                "messages": [{"role": "system", "content": ai_system_prompt()},
+                "messages": [{"role": "system", "content": system_prompt or ai_system_prompt()},
                              {"role": "user", "content": user_text}],
                 "temperature": 0.1,
-                "max_tokens": 8000,
+                "max_tokens": max_tokens,
             })
             text = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
             items = _parse_ai_json(text)
@@ -845,11 +877,13 @@ def _ai_ask(models: list[str], key: str, user_text: str) -> tuple[str, list[dict
         except AIError as exc:
             last = exc
             if exc.status in (401, 402, 403):
+                block_remaining_requests_this_run()
                 raise AIError(f"OpenRouter отклонил ключ/баланс ({exc.status}). Проверьте ключ.",
                               exc.status, exc.body, fatal=True) from exc
             if exc.status == 429 and re.search(r"per[- ]?day|daily", exc.body, re.I):
-                raise AIError("Исчерпан суточный лимит бесплатных запросов OpenRouter "
-                              "(50/сутки). Результаты сохранены, продолжите завтра.",
+                block_remaining_requests_this_run()
+                raise AIError("OpenRouter сообщил об исчерпании суточной квоты. "
+                              "Результаты сохранены, попробуйте позже.",
                               429, exc.body, fatal=True) from exc
         if model != models[-1]:
             log.info("    модель %s недоступна, сразу переключаюсь на следующую", model)
@@ -1064,6 +1098,106 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
     return result
 
 
+def run_nexus_ai_analysis(
+    rows: list[ModRow],
+    settings: "Settings",
+    args: argparse.Namespace,
+) -> dict[int, NexusModRecord]:
+    mod_ids = {r.mod_id for r in rows if is_valid_mod_id(r.mod_id)}
+    cache_path = SCRIPT_DIR / "nexus_analysis_cache.json"
+    cfg = settings.cfg or {}
+    ai_cfg = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    key = key or str(ai_cfg.get("api_key") or "").strip()
+    if not key or key.upper().startswith(("YOUR_", "YOUR-")):
+        log.warning("[Nexus AI] Нет ключа OpenRouter; использую только сохранённый анализ.")
+        return fetch_nexus_mod_records(mod_ids, cache_path, 0)
+
+    records = fetch_nexus_mod_records(
+        mod_ids,
+        cache_path,
+        args.nexus_max_requests,
+    )
+    pending = [
+        record for _, record in sorted(records.items())
+        if record.description and record.recommendation is None
+    ]
+    max_mods = args.nexus_ai_max_mods
+    if len(pending) > max_mods:
+        log.info(
+            "[Nexus AI] За лимитом анализа оставлено %d модов; максимум за запуск: %d",
+            len(pending) - max_mods,
+            max_mods,
+        )
+    pending = pending[:max_mods]
+    if not pending:
+        log.info("[Nexus AI] Все доступные страницы уже проанализированы или недоступны.")
+        return records
+
+    configured_models = ai_cfg.get("models")
+    if not isinstance(configured_models, list) or not configured_models:
+        configured_models = DEFAULT_AI_MODELS
+    models_value = [args.ai_model] if args.ai_model else configured_models
+    models = [str(model) for model in models_value if str(model).strip()]
+    if not models:
+        log.error("[Nexus AI] Список моделей OpenRouter пуст.")
+        return records
+
+    batches = [
+        pending[index:index + ANALYSIS_BATCH_SIZE]
+        for index in range(0, len(pending), ANALYSIS_BATCH_SIZE)
+    ]
+    log.info(
+        "[Nexus AI] Анализирую %d страниц модов; до %d запросов к OpenRouter, модель: %s",
+        len(pending),
+        len(batches),
+        models[0],
+    )
+    log.info(
+        "[Nexus AI] ИИ получает только публичные данные страниц Nexus; "
+        "имена архивов и локальные пути не отправляются."
+    )
+    last_call = 0.0
+    for batch_index, batch in enumerate(batches, 1):
+        wait = AI_MIN_INTERVAL - (time.monotonic() - last_call)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            last_call = time.monotonic()
+            model, items = _ai_ask(
+                models,
+                key,
+                build_analysis_payload(batch),
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                max_tokens=3000,
+            )
+        except AIError as exc:
+            log.warning("[Nexus AI] %s", exc)
+            if exc.fatal:
+                break
+            continue
+        recommendations = parse_recommendations(items, batch, model)
+        if not recommendations:
+            log.warning("[Nexus AI] Модель %s не вернула проверяемых результатов для пачки %d.",
+                        model, batch_index)
+            continue
+        for record in batch:
+            recommendation = recommendations.get(record.mod_id)
+            if recommendation is not None:
+                records[record.mod_id] = replace(record, recommendation=recommendation)
+        log.info(
+            "[Nexus AI] Пачка %d/%d: сохранено рекомендаций %d/%d.",
+            batch_index,
+            len(batches),
+            len(recommendations),
+            len(batch),
+        )
+        # Persist every successful batch so a later network failure doesn't lose progress.
+        save_nexus_mod_records(records, cache_path)
+
+    return records
+
+
 def cmd_ai_models(args: argparse.Namespace) -> int:
     """Список бесплатных моделей OpenRouter (ключ не нужен)."""
     try:
@@ -1177,9 +1311,62 @@ def render_ai_note(info: Optional[AIInfo]) -> str:
             f'🤖 {mark}{_esc(text)}</div>')
 
 
+def render_installation_note(note: Optional[InstallationNote]) -> str:
+    if note is None:
+        return ""
+    if note.method == "unavailable":
+        excerpt = f"Nexus API не предоставил описание (HTTP {note.error_code})."
+    else:
+        excerpt = _esc(note.excerpt) if note.excerpt else "Явные указания по установке в описании не найдены."
+    return (
+        '<details class="author-install-note" style="font-size:.82em;opacity:.9;margin-top:5px;">'
+        f'<summary>📄 По описанию автора: {_esc(method_label(note.method))}</summary>'
+        f'<div style="margin-top:4px;">{excerpt}<br>'
+        f'<a href="https://www.nexusmods.com/{GAME_NAME}/mods/{note.mod_id}" target="_blank" '
+        f'rel="noopener">Источник на Nexus ↗</a> · проверено {format_checked_date(note.checked_at)}</div>'
+        '</details>'
+    )
+
+
+def render_mod_analysis(record: Optional[NexusModRecord]) -> str:
+    if record is None:
+        return ""
+    if record.error_code is not None:
+        return (
+            '<div class="mod-analysis" style="font-size:.82em;opacity:.85;margin-top:5px;">'
+            f'Nexus не предоставил страницу (HTTP {record.error_code}).</div>'
+        )
+    recommendation = record.recommendation
+    if recommendation is None:
+        return ""
+    author_excerpt = extract_installation_note(record.mod_id, record.description).excerpt
+    evidence = (
+        f'<div style="margin-top:5px;"><strong>Фрагмент инструкции автора:</strong> '
+        f'{_esc(author_excerpt)}</div>'
+        if author_excerpt else
+        '<div style="margin-top:5px;">Явную инструкцию по установке в описании не нашли.</div>'
+    )
+    return (
+        '<details class="mod-analysis" style="font-size:.82em;opacity:.92;margin-top:6px;">'
+        f'<summary>🤖 ИИ: {_esc(analysis_label(recommendation.method))} '
+        f'({recommendation.confidence}% уверенности модели)</summary>'
+        f'<div style="margin-top:5px;"><strong>Что меняет:</strong> '
+        f'{_esc(recommendation.summary_ru)}<br>'
+        f'<strong>Тип:</strong> {_esc(analysis_label(recommendation.category))}; '
+        f'<strong>охват:</strong> {_esc(analysis_label(recommendation.impact))}.<br>'
+        f'<strong>Почему:</strong> {_esc(recommendation.rationale_ru)}'
+        f'{evidence}<br>'
+        f'<a href="https://www.nexusmods.com/{GAME_NAME}/mods/{record.mod_id}" target="_blank" '
+        f'rel="noopener">Страница Nexus (источник) ↗</a>'
+        '</div></details>'
+    )
+
+
 def render_row(row: ModRow, index_of: dict[int, int],
                ai_map: Optional[dict[str, AIInfo]] = None,
-               custom_blacklist: Optional[dict[int, str]] = None) -> str:
+               custom_blacklist: Optional[dict[int, str]] = None,
+               installation_notes: Optional[dict[int, InstallationNote]] = None,
+               nexus_records: Optional[dict[int, NexusModRecord]] = None) -> str:
     info = (ai_map or {}).get(norm_title(row.title))
     badge_cls, badge_text = BADGES[row.status]
     if is_valid_mod_id(row.mod_id):
@@ -1217,6 +1404,9 @@ def render_row(row: ModRow, index_of: dict[int, int],
     elif row.status == "dup":
         action_lines[0] = f'<strong style="color:var(--accent-yellow);">{action_lines[0]}</strong>'
     action_html = "<br>".join(action_lines)
+    if row.mod_id is not None:
+        action_html += render_installation_note((installation_notes or {}).get(row.mod_id))
+        action_html += render_mod_analysis((nexus_records or {}).get(row.mod_id))
     if is_valid_mod_id(row.mod_id):
         custom_entries = custom_blacklist or {}
         if row.mod_id in custom_entries:
@@ -1237,6 +1427,15 @@ def render_row(row: ModRow, index_of: dict[int, int],
         action_html += '<div class="blacklist-action">' + blacklist_button + '</div>'
 
     extra = [info.en, info.ru, info.query, info.kind] if info else []
+    install_note = (installation_notes or {}).get(row.mod_id) if row.mod_id is not None else None
+    if install_note:
+        extra.append(install_note.excerpt)
+    analysis_record = (nexus_records or {}).get(row.mod_id) if row.mod_id is not None else None
+    if analysis_record and analysis_record.recommendation:
+        extra.extend((
+            analysis_record.recommendation.summary_ru,
+            analysis_record.recommendation.rationale_ru,
+        ))
     search = " ".join([row.title, str(row.mod_id or ""), row.danger, *extra] + [f.name for f in row.files]).lower()
     group_note = (f'<div class="group-note" title="Почему эти архивы объединены: '
                   f'{_esc(row.grouping_reason)}">Группа: {_esc(row.grouping_reason)}</div>')
@@ -1254,7 +1453,9 @@ def render_row(row: ModRow, index_of: dict[int, int],
 
 
 def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
-                     archives: list[Archive], ai_map: Optional[dict[str, AIInfo]] = None) -> str:
+                     archives: list[Archive], ai_map: Optional[dict[str, AIInfo]] = None,
+                     installation_notes: Optional[dict[int, InstallationNote]] = None,
+                     nexus_records: Optional[dict[int, NexusModRecord]] = None) -> str:
     n_exact = sum(1 for a in archives if a.verdict == EXACT_DUP)
     n_old = sum(1 for a in archives if a.verdict == OLDER)
     reclaim = sum(a.size for a in archives if a.verdict == EXACT_DUP)
@@ -1311,7 +1512,10 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
         "STATS": stats,
         "CORE_CARDS": cards,
         "FILTER_BUTTONS": buttons,
-        "ROWS": "\n".join(render_row(r, index_of, ai_map, custom_blacklist) for r in rows),
+        "ROWS": "\n".join(
+            render_row(r, index_of, ai_map, custom_blacklist, installation_notes, nexus_records)
+            for r in rows
+        ),
         "FILE_DATA": file_json,
     }
     return re.sub(r"@@([A-Z_]+)@@", lambda m: values[m.group(1)], template)
@@ -1371,17 +1575,19 @@ def cmd_scan(args: argparse.Namespace) -> int:
         return 2
 
     archives: list[Archive] = []
-    excluded = [p for p in (s.vortex,) if p]  # не считать Vortex-папку внутри Downloads дважды
     scanned_folders = 0
-    for label, folder, skip in (("Downloads", s.downloads, excluded), ("Vortex", s.vortex, [])):
-        if folder is None:
-            continue
+    scan_labels = {"downloads": "Downloads", "vortex": "Vortex"}
+    for root in build_scan_plan(s.downloads, s.vortex):
+        label = scan_labels[root.source]
+        folder = root.folder
+        if root.warning:
+            log.warning("[!] %s", root.warning)
         if not folder.is_dir():
             log.warning("[!] Папка %s не найдена: %s", label, folder)
             continue
         scanned_folders += 1
         log.info("[*] Сканирование %s: %s", label, folder)
-        found = scan_folder(folder, label.lower(), start_id=len(archives), exclude=skip)
+        found = scan_folder(folder, root.source, start_id=len(archives), exclude=root.exclude)
         archives += found
         log.info("[*] Архивов найдено в %s: %d", label, len(found))
     if not scanned_folders:
@@ -1410,8 +1616,22 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if n_known:
         log.info("[ID] Опознано по встроенному словарю KNOWN_MOD_IDS: %d (прямая ссылка вместо поиска)", n_known)
 
+    installation_notes: dict[int, InstallationNote] = {}
+    nexus_records: dict[int, NexusModRecord] = {}
+    if args.nexus_analyze:
+        nexus_records = run_nexus_ai_analysis(rows, s, args)
+    elif args.nexus_details:
+        installation_notes = load_installation_notes(
+            {r.mod_id for r in rows if is_valid_mod_id(r.mod_id)},
+            SCRIPT_DIR / "nexus_install_cache.json",
+            args.nexus_max_requests,
+        )
+
     s.out.parent.mkdir(parents=True, exist_ok=True)
-    s.out.write_text(render_dashboard(core, rows, archives, ai_map), encoding="utf-8")
+    s.out.write_text(
+        render_dashboard(core, rows, archives, ai_map, installation_notes, nexus_records),
+        encoding="utf-8",
+    )
 
     n_exact = [a for a in archives if a.verdict == EXACT_DUP]
     log.info("")
@@ -1537,6 +1757,15 @@ def cmd_clean(args: argparse.Namespace) -> int:
 # ==================== CLI ====================
 
 def build_parser() -> argparse.ArgumentParser:
+    def nonnegative_int(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("ожидается целое число") from exc
+        if parsed < 0:
+            raise argparse.ArgumentTypeError("число не может быть отрицательным")
+        return parsed
+
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", help="путь к config.json (по умолчанию — рядом со скриптом)")
     common.add_argument("--downloads", help="папка с загрузками Nexus (Downloads)")
@@ -1559,6 +1788,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--ai-model", help="id модели OpenRouter (по умолчанию — бесплатные NVIDIA Nemotron)")
     p_scan.add_argument("--ai-max-requests", type=int, default=0,
                         help=f"максимум запросов за запуск (по умолчанию {AI_DEFAULT_MAX_REQUESTS})")
+    p_scan.add_argument("--nexus-details", action="store_true",
+                        help="получить с Nexus подсказки автора по установке (опционально, без ключа API)")
+    p_scan.add_argument("--nexus-max-requests", type=nonnegative_int, default=20,
+                        help="максимум запросов к Nexus за запуск (по умолчанию 20)")
+    p_scan.add_argument("--nexus-analyze", action="store_true",
+                        help="ИИ анализирует страницы Nexus, переводит описание и рекомендует способ установки")
+    p_scan.add_argument("--nexus-ai-max-mods", type=nonnegative_int, default=10,
+                        help="максимум страниц для AI-анализа за запуск (по умолчанию 10)")
     p_scan.set_defaults(func=cmd_scan)
 
     p_models = sub.add_parser("ai-models", help="показать бесплатные модели OpenRouter")

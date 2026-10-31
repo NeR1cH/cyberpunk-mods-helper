@@ -68,10 +68,20 @@ if "%CONFIG_CREATED%"=="1" (
 echo.
 echo ======================================================
 echo  Сканирование архивов и создание дашборда...
+echo  Автоматическая обработка партиями, пока хватает дневного лимита.
+echo  Безопасный общий лимит OpenRouter: 10 попыток за UTC-сутки.
 echo ======================================================
 echo.
 
-python nexus_links.py scan --no-open --ai-auto
+:scan_loop
+set "AI_REQUESTS_BEFORE="
+set "NEXUS_PAGES_BEFORE="
+for /f "tokens=1,2 delims=|" %%R in ('python openrouter_limits.py progress') do (
+    set "AI_REQUESTS_BEFORE=%%R"
+    set "NEXUS_PAGES_BEFORE=%%S"
+)
+
+python nexus_links.py scan --no-open --ai-auto --ai-max-requests 1 --nexus-analyze --nexus-ai-max-mods 2 --nexus-max-requests 20
 if errorlevel 1 (
     echo.
     echo [!] Сканирование не удалось.
@@ -81,6 +91,27 @@ if errorlevel 1 (
     exit /b 1
 )
 
+set "AI_REQUESTS_AFTER="
+set "NEXUS_PAGES_AFTER="
+for /f "tokens=1,2 delims=|" %%R in ('python openrouter_limits.py progress') do (
+    set "AI_REQUESTS_AFTER=%%R"
+    set "NEXUS_PAGES_AFTER=%%S"
+)
+if not defined AI_REQUESTS_BEFORE goto scan_complete
+if not defined AI_REQUESTS_AFTER goto scan_complete
+if not defined NEXUS_PAGES_BEFORE goto scan_complete
+if not defined NEXUS_PAGES_AFTER goto scan_complete
+if "%AI_REQUESTS_AFTER%"=="-1" goto scan_complete
+if "%AI_REQUESTS_BEFORE%"=="%AI_REQUESTS_AFTER%" if "%NEXUS_PAGES_BEFORE%"=="%NEXUS_PAGES_AFTER%" goto scan_complete
+if "%AI_REQUESTS_AFTER%"=="0" goto scan_complete
+echo.
+echo [*] Партия завершена. Осталось запросов OpenRouter на сегодня: %AI_REQUESTS_AFTER%.
+echo [*] Перехожу к следующей партии...
+echo.
+timeout /t 4 /nobreak > nul
+goto scan_loop
+
+:scan_complete
 echo.
 echo ======================================================
 echo  Запуск дашборда на http://localhost:8000

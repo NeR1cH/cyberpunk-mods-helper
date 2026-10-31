@@ -1,6 +1,8 @@
 """Source-based dashboard categories and archive/group summaries."""
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
 from typing import Iterable, Protocol
 
 
@@ -19,6 +21,51 @@ class SourceSummary:
     downloads_only_groups: int
     vortex_only_groups: int
     both_source_groups: int
+
+
+@dataclass(frozen=True)
+class ScanRoot:
+    source: str
+    folder: Path
+    exclude: tuple[Path, ...] = ()
+    warning: str = ""
+
+
+def build_scan_plan(
+    downloads: Path | None,
+    vortex: Path | None,
+) -> list[ScanRoot]:
+    """Avoid scanning the same physical files under both source labels."""
+    downloads_root = Path(os.path.realpath(downloads)) if downloads else None
+    vortex_root = Path(os.path.realpath(vortex)) if vortex else None
+
+    if downloads_root is None:
+        return [ScanRoot("vortex", vortex_root)] if vortex_root else []
+    if vortex_root is None:
+        return [ScanRoot("downloads", downloads_root)]
+
+    downloads_key = os.path.normcase(str(downloads_root))
+    vortex_key = os.path.normcase(str(vortex_root))
+    if downloads_key == vortex_key:
+        return [ScanRoot(
+            "downloads",
+            downloads_root,
+            warning="downloads и vortex указывают на одну папку; сканирую её один раз как Downloads",
+        )]
+
+    try:
+        vortex_inside_downloads = os.path.commonpath([downloads_key, vortex_key]) == downloads_key
+        downloads_inside_vortex = os.path.commonpath([downloads_key, vortex_key]) == vortex_key
+    except ValueError:
+        vortex_inside_downloads = False
+        downloads_inside_vortex = False
+
+    downloads_exclude = (vortex_root,) if vortex_inside_downloads else ()
+    vortex_exclude = (downloads_root,) if downloads_inside_vortex else ()
+    return [
+        ScanRoot("downloads", downloads_root, downloads_exclude),
+        ScanRoot("vortex", vortex_root, vortex_exclude),
+    ]
 
 
 def source_categories(sources: Iterable[str]) -> set[str]:

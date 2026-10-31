@@ -3,6 +3,9 @@ config.json
 
 # Кэш нейросети и экспорты
 ai_cache.json
+nexus_install_cache.json
+nexus_analysis_cache.json
+openrouter_usage.json*
 blacklist.json
 mod_cache.json
 selection.json
