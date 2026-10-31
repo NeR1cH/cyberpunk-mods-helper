@@ -244,57 +244,80 @@ def _vortex_ts(date: str) -> Optional[int]:
         return None
 
 
-def extract_mod_meta(stem: str) -> ParsedName:
-    """Разбирает имя архива (без расширения) на название, ID, версию и timestamp."""
-    copy_index: Optional[int] = None
-    m = COPY_SUFFIX.search(stem)
-    if m:
-        copy_index = int(m.group(1))
-        stem = stem[: m.start()]
-    stem = stem.strip()
-
-    mv = VORTEX_PATTERN.match(stem)
-    if mv:
+def _parse_vortex_name(stem: str, copy_index: Optional[int]) -> Optional[ParsedName]:
+    match = VORTEX_PATTERN.match(stem)
+    if match:
         return ParsedName(
-            mv.group("title").strip(" -_"),
-            version=_format_version([mv.group("ver")]), ts=_vortex_ts(mv.group("date")),
-            copy_index=copy_index, **_id_fields(int(mv.group("id"))),
+            match.group("title").strip(" -_"),
+            version=_format_version([match.group("ver")]),
+            ts=_vortex_ts(match.group("date")),
+            copy_index=copy_index,
+            **_id_fields(int(match.group("id"))),
         )
+    return None
 
+
+def _parse_timestamped_nexus_name(stem: str, copy_index: Optional[int]) -> Optional[ParsedName]:
     # Стандартное имя Nexus: <название>-<id>-<версия через дефисы>-<timestamp>.
     # Timestamp — надёжный якорь, фильтр «годов» здесь не нужен.
-    mt = TS_TAIL.search(stem)
-    if mt:
-        head = stem[: mt.start()]
-        toks = _tokenize(head, "-")
-        words = [t for t, _ in toks]
-        idx = _pick_id_index(words, anchored=True)
-        if idx is None:   # структура есть, но число вне диапазона Mod ID — вырезаем его из названия
-            idx = _pick_id_index(words, anchored=True, strict=False)
-        if idx is not None:
-            return ParsedName(
-                head[: toks[idx][1]].strip(" -_"),
-                version=_format_version(words[idx + 1:]),
-                ts=int(mt.group(1)), copy_index=copy_index, **_id_fields(int(words[idx])),
-            )
+    match = TS_TAIL.search(stem)
+    if not match:
+        return None
+    head = stem[: match.start()]
+    tokens = _tokenize(head, "-")
+    words = [token for token, _ in tokens]
+    index = _pick_id_index(words, anchored=True)
+    if index is None:
+        index = _pick_id_index(words, anchored=True, strict=False)
+    if index is None:
+        return None
+    return ParsedName(
+        head[: tokens[index][1]].strip(" -_"),
+        version=_format_version(words[index + 1:]),
+        ts=int(match.group(1)),
+        copy_index=copy_index,
+        **_id_fields(int(words[index])),
+    )
 
-    # Без timestamp (файл переименован вручную): «Название-1234-1-0».
+
+def _parse_manual_name(stem: str, copy_index: Optional[int]) -> Optional[ParsedName]:
     toks = _tokenize(stem, r"\-_ ")
     words = [t for t, _ in toks]
     idx = _pick_id_index(words, anchored=False)
-    if idx is None:       # «Виртуальная мастерская-168466»: 168466 — File ID, а не Mod ID
+    if idx is None:
         idx = _pick_id_index(words, anchored=False, strict=False)
-    if idx is not None:
-        return ParsedName(
-            stem[: toks[idx][1]].strip(" -_"),
-            version=_format_version(words[idx + 1:]),
-            copy_index=copy_index, **_id_fields(int(words[idx])),
-        )
+    if idx is None:
+        return None
+    return ParsedName(
+        stem[: toks[idx][1]].strip(" -_"),
+        version=_format_version(words[idx + 1:]),
+        copy_index=copy_index,
+        **_id_fields(int(words[idx])),
+    )
 
+
+def _clean_unparsed_name(stem: str, copy_index: Optional[int]) -> ParsedName:
     t = JUNK_WORDS.sub("", stem)
     t = re.sub(r"[«»\"'\[\]\(\)]", " ", t)
     t = re.sub(r"[-_.]+", " ", t)
     return ParsedName(" ".join(t.split()) or stem, None, "", None, copy_index)
+
+
+def extract_mod_meta(stem: str) -> ParsedName:
+    """Разбирает имя архива (без расширения) на название, ID, версию и timestamp."""
+    copy_index: Optional[int] = None
+    match = COPY_SUFFIX.search(stem)
+    if match:
+        copy_index = int(match.group(1))
+        stem = stem[: match.start()]
+    stem = stem.strip()
+
+    return (
+        _parse_vortex_name(stem, copy_index)
+        or _parse_timestamped_nexus_name(stem, copy_index)
+        or _parse_manual_name(stem, copy_index)
+        or _clean_unparsed_name(stem, copy_index)
+    )
 
 
 def norm_title(title: str) -> str:
