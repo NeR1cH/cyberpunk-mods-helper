@@ -379,11 +379,73 @@ class InstallationNoteTests(unittest.TestCase):
             1: now,
             2: now - mod_recommendations.CACHE_TTL_SECONDS,
             4: now + 60,
+            5: 10 ** 400,
         }
 
-        stale = mod_recommendations._stale_mod_ids({4, -1, 3, 2, 1, 0}, cached_at, now)
+        stale = mod_recommendations._stale_mod_ids({5, 4, -1, 3, 2, 1, 0}, cached_at, now)
 
-        self.assertEqual(stale, [2, 3])
+        self.assertEqual(stale, [2, 3, 5])
+
+    def test_installation_cache_skips_invalid_timestamps(self) -> None:
+        entry = {"method": "manual", "excerpt": "Install manually"}
+        invalid_times = [float("nan"), float("inf"), True, 10 ** 400]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "installation-cache.json"
+            cache_path.write_text(
+                json.dumps({
+                    "version": mod_recommendations.CACHE_VERSION,
+                    "items": {
+                        str(index): {**entry, "checked_at": timestamp}
+                        for index, timestamp in enumerate(invalid_times, start=1)
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            with self.assertLogs("modaudit", level="WARNING"):
+                notes = mod_recommendations._load_cache(cache_path)
+
+        self.assertEqual(notes, {})
+
+    def test_analysis_cache_rejects_invalid_record_and_recommendation_timestamps(self) -> None:
+        recommendation = {
+            "method": "manual",
+            "category": "gameplay",
+            "impact": "medium",
+            "confidence": 80,
+            "summary_ru": "Описание",
+            "rationale_ru": "Причина",
+            "model": "test/model",
+            "analyzed_at": float("nan"),
+        }
+        record = {
+            "name": "Example mod",
+            "summary": "",
+            "description": "Description",
+            "category": "Gameplay",
+            "tags": [],
+            "fetched_at": 1,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "analysis-cache.json"
+            cache_path.write_text(
+                json.dumps({
+                    "version": mod_recommendations.ANALYSIS_CACHE_VERSION,
+                    "items": {
+                        "1": {**record, "fetched_at": float("inf")},
+                        "2": {**record, "recommendation": recommendation},
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            with self.assertLogs("modaudit", level="WARNING"):
+                records = mod_recommendations._load_analysis_cache(cache_path)
+
+        self.assertEqual(set(records), {2})
+        self.assertIsNone(records[2].recommendation)
 
     def test_analysis_page_payload_is_validated_and_converted_to_record(self) -> None:
         payload = json.dumps({

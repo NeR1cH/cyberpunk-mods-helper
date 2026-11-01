@@ -97,6 +97,15 @@ class NexusModRecord:
     recommendation: ModRecommendation | None = None
 
 
+def _is_finite_timestamp(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _plain_lines(description: str) -> list[str]:
     text = html.unescape(description)
     text = re.sub(r"<br\s*/?>|</(?:p|div|li|h[1-6])\s*>", "\n", text, flags=re.IGNORECASE)
@@ -178,7 +187,7 @@ def _load_cache(path: Path) -> dict[int, InstallationNote]:
                 not isinstance(value, dict)
                 or value.get("method") not in {"manual", "vortex", "both", "unknown", "unavailable"}
                 or not isinstance(value.get("excerpt"), str)
-                or not isinstance(value.get("checked_at"), (int, float))
+                or not _is_finite_timestamp(value.get("checked_at"))
                 or (
                     value.get("error_code") is not None
                     and not isinstance(value.get("error_code"), int)
@@ -233,7 +242,7 @@ def _stale_mod_ids(mod_ids: set[int], cached_at: dict[int, float], now: float) -
         if mod_id > 0
         and (
             mod_id not in cached_at
-            or not math.isfinite(cached_at[mod_id])
+            or not _is_finite_timestamp(cached_at[mod_id])
             or now - cached_at[mod_id] >= CACHE_TTL_SECONDS
         )
     ]
@@ -346,7 +355,7 @@ def _recommendation_from_json(raw: object) -> ModRecommendation | None:
         or not isinstance(raw.get("summary_ru"), str)
         or not isinstance(raw.get("rationale_ru"), str)
         or not isinstance(raw.get("model"), str)
-        or not isinstance(raw.get("analyzed_at"), (int, float))
+        or not _is_finite_timestamp(raw.get("analyzed_at"))
         or not raw["summary_ru"].strip()
         or not raw["rationale_ru"].strip()
         or not raw["model"].strip()
@@ -373,7 +382,7 @@ def _record_from_json(mod_id: int, raw: object) -> NexusModRecord | None:
         or not isinstance(raw.get("description"), str)
         or not isinstance(raw.get("category"), str)
         or not isinstance(raw.get("tags"), list)
-        or not isinstance(raw.get("fetched_at"), (int, float))
+        or not _is_finite_timestamp(raw.get("fetched_at"))
         or (
             raw.get("error_code") is not None
             and not isinstance(raw.get("error_code"), int)
