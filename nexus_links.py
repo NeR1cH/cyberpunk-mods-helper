@@ -1704,6 +1704,24 @@ def render_game_mod_entry(entry: GameModEntry) -> str:
     )
 
 
+def _dashboard_file_data(
+    rows: list[ModRow],
+    archives: list[Archive],
+) -> tuple[dict[int, int], str]:
+    ordered = [file for row in rows for file in row.files]
+    index_of = {archive.id: index for index, archive in enumerate(ordered)}
+    by_id = {archive.id: archive for archive in archives}
+    file_data = [{
+        "s": archive.source, "n": archive.name, "p": str(archive.path), "z": archive.size,
+        "m": archive.mtime, "id": archive.meta.mod_id, "t": archive.meta.title,
+        "v": archive.meta.version, "vd": archive.verdict, "nt": archive.note,
+        "h": archive.sha256,
+        "k": str(by_id[archive.keeper].path) if archive.keeper is not None else "",
+    } for archive in ordered]
+    file_json = json.dumps(file_data, ensure_ascii=False).replace("</", "<\\/")
+    return index_of, file_json
+
+
 def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
                      archives: list[Archive], ai_map: Optional[dict[str, AIInfo]] = None,
                      installation_notes: Optional[dict[int, InstallationNote]] = None,
@@ -1719,17 +1737,7 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
     counts["local"] = len(game_mods)
     source_summary = summarize_sources(archives, rows)
 
-    # Данные для JS (чекбоксы, экспорт). Индексы — по порядку отображения.
-    ordered = [f for r in rows for f in r.files]
-    index_of = {a.id: i for i, a in enumerate(ordered)}
-    by_id = {a.id: a for a in archives}
-    file_data = [{
-        "s": a.source, "n": a.name, "p": str(a.path), "z": a.size, "m": a.mtime,
-        "id": a.meta.mod_id, "t": a.meta.title, "v": a.meta.version,
-        "vd": a.verdict, "nt": a.note, "h": a.sha256,
-        "k": str(by_id[a.keeper].path) if a.keeper is not None else "",
-    } for a in ordered]
-    file_json = json.dumps(file_data, ensure_ascii=False).replace("</", "<\\/")
+    index_of, file_json = _dashboard_file_data(rows, archives)
 
     stats = (
         f'Групп модов: <strong>{counts["all"]}</strong> &bull; '
