@@ -1247,6 +1247,37 @@ def _select_ai_work(
     return wanted
 
 
+def _run_ai_batches(
+    todo: list[str],
+    wanted: dict[str, tuple[str, list[str], list[Path]]],
+    models: list[str],
+    key: str,
+    max_requests: int,
+    result: dict[str, AIInfo],
+    cache: dict[str, dict],
+) -> None:
+    batches = [todo[i:i + AI_BATCH_SIZE] for i in range(0, len(todo), AI_BATCH_SIZE)]
+    if len(batches) > max_requests:
+        log.info("[AI] за запуск обработаю %d из %d пачек (--ai-max-requests), остальное — при следующем запуске",
+                 max_requests, len(batches))
+        batches = batches[:max_requests]
+
+    for n, batch in enumerate(batches, 1):
+        log.info("[AI] пачка %d/%d (%d шт.)…", n, len(batches), len(batch))
+        try:
+            model, items = _ai_ask(models, key, _build_ai_batch_payload(batch, wanted))
+        except AIError as exc:
+            log.warning("[AI] %s", exc)
+            if exc.fatal:
+                break
+            continue
+        got = _apply_ai_batch_result(batch, items, model, result, cache)
+        if model in models and models[0] != model:
+            models = [model, *(candidate for candidate in models if candidate != model)]
+        save_ai_cache(cache)  # после каждой пачки: прогресс не пропадёт при сбое
+        log.info("    получено и сохранено: %d из %d", got, len(batch))
+
+
 def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
            online: bool) -> dict[str, AIInfo]:
     """Возвращает {norm_title: AIInfo}. Без online — только то, что уже лежит в кэше."""
@@ -1302,26 +1333,7 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
         log.info("[AI] модов к анализу: %d, модель: %s", len(todo), models[0])
         log.info("[AI] уходят только названия модов, имена файлов и имена внутри архивов "
                  "(.archive/.reds/.yaml, r6/scripts) — без путей и имени пользователя")
-        batches = [todo[i:i + AI_BATCH_SIZE] for i in range(0, len(todo), AI_BATCH_SIZE)]
-        if len(batches) > max_requests:
-            log.info("[AI] за запуск обработаю %d из %d пачек (--ai-max-requests), остальное — при следующем запуске",
-                     max_requests, len(batches))
-            batches = batches[:max_requests]
-
-        for n, batch in enumerate(batches, 1):
-            log.info("[AI] пачка %d/%d (%d шт.)…", n, len(batches), len(batch))
-            try:
-                model, items = _ai_ask(models, key, _build_ai_batch_payload(batch, wanted))
-            except AIError as exc:
-                log.warning("[AI] %s", exc)
-                if exc.fatal:
-                    break
-                continue
-            got = _apply_ai_batch_result(batch, items, model, result, cache)
-            if model in models and models[0] != model:
-                models = [model, *(candidate for candidate in models if candidate != model)]
-            save_ai_cache(cache)  # после каждой пачки: прогресс не пропадёт при сбое
-            log.info("    получено и сохранено: %d из %d", got, len(batch))
+        _run_ai_batches(todo, wanted, models, key, max_requests, result, cache)
     except Exception as exc:  # noqa: BLE001 — ИИ не должен ронять сборку дашборда
         log.warning("[AI] ошибка, продолжаю без ИИ: %s", exc)
     return result
