@@ -61,6 +61,7 @@ from mod_recommendations import (
     method_label,
     parse_recommendations,
     save_nexus_mod_records,
+    vortex_support_label,
 )
 
 log = logging.getLogger("modaudit")
@@ -1416,7 +1417,8 @@ def run_nexus_ai_analysis(
     )
     pending = [
         record for _, record in sorted(records.items())
-        if record.description and record.recommendation is None
+        if record.description
+        and (record.recommendation is None or bool(getattr(args, "ai_refresh", False)))
     ]
     max_mods = args.nexus_ai_max_mods
     if len(pending) > max_mods:
@@ -1594,13 +1596,17 @@ def render_mod_analysis(record: Optional[NexusModRecord]) -> str:
     )
     return (
         '<details class="mod-analysis" style="font-size:.82em;opacity:.92;margin-top:6px;">'
-        f'<summary>🤖 ИИ: {_esc(analysis_label(recommendation.method))} '
-        f'({recommendation.confidence}% уверенности модели)</summary>'
-        f'<div style="margin-top:5px;"><strong>Что меняет:</strong> '
-        f'{_esc(recommendation.summary_ru)}<br>'
+        '<summary>🤖 ИИ-анализ мода</summary>'
+        f'<div style="margin-top:5px;"><strong>Инструкция автора:</strong> '
+        f'{_esc(analysis_label(recommendation.method))}.<br>'
+        f'<strong>Оценка поддержки Vortex:</strong> '
+        f'{_esc(vortex_support_label(recommendation.vortex_support))}.<br>'
+        f'<strong>Уверенность ИИ:</strong> {recommendation.confidence}% '
+        '(в разборе; это не вероятность совместимости).<br>'
+        f'<strong>Что меняет:</strong> {_esc(recommendation.summary_ru)}<br>'
         f'<strong>Тип:</strong> {_esc(analysis_label(recommendation.category))}; '
         f'<strong>охват:</strong> {_esc(analysis_label(recommendation.impact))}.<br>'
-        f'<strong>Почему:</strong> {_esc(recommendation.rationale_ru)}'
+        f'<strong>Основание оценки:</strong> {_esc(recommendation.rationale_ru)}'
         f'{evidence}<br>'
         f'<a href="https://www.nexusmods.com/{GAME_NAME}/mods/{record.mod_id}" target="_blank" '
         f'rel="noopener">Страница Nexus (источник) ↗</a>'
@@ -2187,7 +2193,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--nexus-max-requests", type=nonnegative_int, default=20,
                         help="максимум запросов к Nexus за запуск (по умолчанию 20)")
     p_scan.add_argument("--nexus-analyze", action="store_true",
-                        help="ИИ анализирует страницы Nexus, переводит описание и рекомендует способ установки")
+                        help="ИИ анализирует страницу Nexus и отдельно оценивает инструкцию автора и поддержку Vortex")
     p_scan.add_argument("--nexus-ai-max-mods", type=nonnegative_int, default=10,
                         help="максимум страниц для AI-анализа за запуск (по умолчанию 10)")
     p_scan.set_defaults(func=cmd_scan)

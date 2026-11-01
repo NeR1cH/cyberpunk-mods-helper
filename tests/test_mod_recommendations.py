@@ -524,6 +524,7 @@ class InstallationNoteTests(unittest.TestCase):
             rationale_ru="Автор описывает ручную установку.",
             model="test/model",
             analyzed_at=20,
+            vortex_support="possible",
         )
         record = mod_recommendations.NexusModRecord(
             mod_id=1234,
@@ -542,6 +543,40 @@ class InstallationNoteTests(unittest.TestCase):
             restored = mod_recommendations._load_analysis_cache(cache_path)
 
         self.assertEqual(restored, {1234: record})
+
+    def test_legacy_analysis_cache_defaults_vortex_support_to_unknown(self) -> None:
+        legacy_record = {
+            "name": "Example mod",
+            "summary": "",
+            "description": "Description",
+            "category": "Gameplay",
+            "tags": [],
+            "fetched_at": 10,
+            "recommendation": {
+                "method": "manual",
+                "category": "gameplay",
+                "impact": "medium",
+                "confidence": 75,
+                "summary_ru": "Описание мода.",
+                "rationale_ru": "Автор описывает ручную установку.",
+                "model": "test/model",
+                "analyzed_at": 20,
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "analysis-cache.json"
+            cache_path.write_text(
+                json.dumps({
+                    "version": mod_recommendations.ANALYSIS_CACHE_VERSION,
+                    "items": {"1234": legacy_record},
+                }),
+                encoding="utf-8",
+            )
+
+            restored = mod_recommendations._load_analysis_cache(cache_path)
+
+        self.assertEqual(restored[1234].recommendation.vortex_support, "unknown")
 
     def test_public_page_request_uses_shared_bounded_request(self) -> None:
         response = MagicMock()
@@ -770,6 +805,64 @@ class InstallationNoteTests(unittest.TestCase):
         invalid = dict(item, confidence=181)
         self.assertEqual(mod_recommendations.parse_recommendations([invalid], [record], "test/model"), {})
 
+    def test_recommendation_separates_author_method_from_vortex_support(self) -> None:
+        record = mod_recommendations.NexusModRecord(
+            mod_id=1234,
+            name="Test mod",
+            summary="",
+            description="Test description",
+            category="Gameplay",
+            tags=(),
+            fetched_at=1,
+        )
+        item = {
+            "i": 0,
+            "method": "manual",
+            "vortex_support": "possible",
+            "category": "gameplay",
+            "impact": "medium",
+            "confidence": 95,
+            "summary_ru": "Описание мода.",
+            "rationale_ru": "Ручной способ описан автором; Vortex возможен, но не подтверждён.",
+        }
+
+        for status in ("confirmed", "possible", "unsupported", "unknown"):
+            with self.subTest(vortex_support=status):
+                result = mod_recommendations.parse_recommendations(
+                    [dict(item, vortex_support=status)],
+                    [record],
+                    "test/model",
+                )
+                recommendation = result[1234]
+                self.assertEqual(recommendation.method, "manual")
+                self.assertEqual(recommendation.vortex_support, status)
+                self.assertEqual(
+                    mod_recommendations.analysis_label(recommendation.method),
+                    "ручные шаги описаны автором",
+                )
+        self.assertEqual(
+            mod_recommendations.vortex_support_label("possible"),
+            "возможно, но автором не подтверждено (оценка ИИ)",
+        )
+        self.assertEqual(
+            mod_recommendations.vortex_support_label("confirmed"),
+            "автор явно подтверждает поддержку",
+        )
+        self.assertEqual(
+            mod_recommendations.vortex_support_label("unsupported"),
+            "автор явно сообщает, что Vortex не поддерживается",
+        )
+        invalid = dict(item, vortex_support="probably")
+        self.assertEqual(
+            mod_recommendations.parse_recommendations([invalid], [record], "test/model"),
+            {},
+        )
+
+    def test_analysis_prompt_distinguishes_method_from_vortex_support(self) -> None:
+        self.assertIn("vortex_support", mod_recommendations.ANALYSIS_SYSTEM_PROMPT)
+        self.assertIn("НЕ означает", mod_recommendations.ANALYSIS_SYSTEM_PROMPT)
+        self.assertIn("вероятность совместимости с Vortex", mod_recommendations.ANALYSIS_SYSTEM_PROMPT)
+
     def test_rendered_ai_recommendation_escapes_untrusted_model_text(self) -> None:
         record = mod_recommendations.NexusModRecord(
             mod_id=1234,
@@ -780,14 +873,15 @@ class InstallationNoteTests(unittest.TestCase):
             tags=(),
             fetched_at=1,
             recommendation=mod_recommendations.ModRecommendation(
-                method="unknown",
+                method="manual",
                 category="gameplay",
                 impact="medium",
-                confidence=50,
+                confidence=95,
                 summary_ru="<script>alert(1)</script>",
-                rationale_ru="Не удалось подтвердить метод.",
+                rationale_ru="Ручная инструкция есть; поддержка Vortex не подтверждена.",
                 model="test/model",
                 analyzed_at=1,
+                vortex_support="possible",
             ),
         )
 
@@ -795,6 +889,10 @@ class InstallationNoteTests(unittest.TestCase):
 
         self.assertIn("&lt;script&gt;", rendered)
         self.assertNotIn("<script>", rendered)
+        self.assertIn("ручные шаги описаны автором", rendered)
+        self.assertIn("возможно, но автором не подтверждено", rendered)
+        self.assertIn("95%", rendered)
+        self.assertIn("не вероятность совместимости", rendered)
         self.assertIn("Фрагмент инструкции автора", rendered)
         self.assertIn("nexusmods.com/cyberpunk2077/mods/1234", rendered)
 
@@ -811,6 +909,7 @@ class InstallationNoteTests(unittest.TestCase):
         response = [{
             "i": 0,
             "method": "vortex",
+            "vortex_support": "confirmed",
             "category": "major_overhaul",
             "impact": "high",
             "confidence": 80,
@@ -837,7 +936,65 @@ class InstallationNoteTests(unittest.TestCase):
         self.assertIn("Author's page description", ask.call_args.args[2])
         self.assertEqual(ask.call_args.kwargs["system_prompt"], mod_recommendations.ANALYSIS_SYSTEM_PROMPT)
         self.assertEqual(result[1234].recommendation.method, "vortex")
+        self.assertEqual(result[1234].recommendation.vortex_support, "confirmed")
         save.assert_called_once()
+
+    def test_analysis_runner_refreshes_cached_recommendations_when_requested(self) -> None:
+        old_recommendation = mod_recommendations.ModRecommendation(
+            method="manual",
+            category="gameplay",
+            impact="medium",
+            confidence=60,
+            summary_ru="Старый анализ.",
+            rationale_ru="Установка описана автором.",
+            model="old/model",
+            analyzed_at=1,
+            vortex_support="unknown",
+        )
+        record = mod_recommendations.NexusModRecord(
+            mod_id=1234,
+            name="Example mod",
+            summary="",
+            description="Public page description",
+            category="Gameplay",
+            tags=(),
+            fetched_at=1,
+            recommendation=old_recommendation,
+        )
+        response = [{
+            "i": 0,
+            "method": "manual",
+            "vortex_support": "possible",
+            "category": "gameplay",
+            "impact": "medium",
+            "confidence": 95,
+            "summary_ru": "Обновлённый анализ.",
+            "rationale_ru": "Ручной способ описан; Vortex может подойти, но это не подтверждено.",
+        }]
+        args = Namespace(
+            nexus_max_requests=10,
+            nexus_ai_max_mods=1,
+            ai_model=None,
+            ai_refresh=True,
+        )
+        settings = Namespace(cfg={
+            "ai": {
+                "api_key": "test-key",
+                "models": ["test/model"],
+            }
+        })
+
+        with patch("nexus_links.fetch_nexus_mod_records", return_value={1234: record}):
+            with patch("nexus_links._ai_ask", return_value=("test/model", response)) as ask:
+                with patch("nexus_links.save_nexus_mod_records"):
+                    result = nexus_links.run_nexus_ai_analysis(
+                        [Namespace(mod_id=1234)],
+                        settings,
+                        args,
+                    )
+
+        ask.assert_called_once()
+        self.assertEqual(result[1234].recommendation.vortex_support, "possible")
 
     def test_analysis_runner_persists_each_successful_batch(self) -> None:
         records = {
@@ -855,6 +1012,7 @@ class InstallationNoteTests(unittest.TestCase):
         response = [{
             "i": 0,
             "method": "manual",
+            "vortex_support": "unknown",
             "category": "gameplay",
             "impact": "medium",
             "confidence": 70,
