@@ -1339,51 +1339,13 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
     return result
 
 
-def run_nexus_ai_analysis(
-    rows: list[ModRow],
-    settings: "Settings",
-    args: argparse.Namespace,
-) -> dict[int, NexusModRecord]:
-    mod_ids = {r.mod_id for r in rows if is_valid_mod_id(r.mod_id)}
-    cache_path = SCRIPT_DIR / "nexus_analysis_cache.json"
-    cfg = settings.cfg or {}
-    ai_cfg = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
-    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    key = key or str(ai_cfg.get("api_key") or "").strip()
-    if not key or key.upper().startswith(("YOUR_", "YOUR-")):
-        log.warning("[Nexus AI] Нет ключа OpenRouter; использую только сохранённый анализ.")
-        return fetch_nexus_mod_records(mod_ids, cache_path, 0)
-
-    records = fetch_nexus_mod_records(
-        mod_ids,
-        cache_path,
-        args.nexus_max_requests,
-    )
-    pending = [
-        record for _, record in sorted(records.items())
-        if record.description and record.recommendation is None
-    ]
-    max_mods = args.nexus_ai_max_mods
-    if len(pending) > max_mods:
-        log.info(
-            "[Nexus AI] За лимитом анализа оставлено %d модов; максимум за запуск: %d",
-            len(pending) - max_mods,
-            max_mods,
-        )
-    pending = pending[:max_mods]
-    if not pending:
-        log.info("[Nexus AI] Все доступные страницы уже проанализированы или недоступны.")
-        return records
-
-    configured_models = ai_cfg.get("models")
-    if not isinstance(configured_models, list) or not configured_models:
-        configured_models = DEFAULT_AI_MODELS
-    models_value = [args.ai_model] if args.ai_model else configured_models
-    models = [str(model) for model in models_value if str(model).strip()]
-    if not models:
-        log.error("[Nexus AI] Список моделей OpenRouter пуст.")
-        return records
-
+def _run_nexus_analysis_batches(
+    pending: list[NexusModRecord],
+    models: list[str],
+    key: str,
+    records: dict[int, NexusModRecord],
+    cache_path: Path,
+) -> None:
     batches = [
         pending[index:index + ANALYSIS_BATCH_SIZE]
         for index in range(0, len(pending), ANALYSIS_BATCH_SIZE)
@@ -1430,6 +1392,54 @@ def run_nexus_ai_analysis(
         )
         # Persist every successful batch so a later network failure doesn't lose progress.
         save_nexus_mod_records(records, cache_path)
+
+
+def run_nexus_ai_analysis(
+    rows: list[ModRow],
+    settings: "Settings",
+    args: argparse.Namespace,
+) -> dict[int, NexusModRecord]:
+    mod_ids = {r.mod_id for r in rows if is_valid_mod_id(r.mod_id)}
+    cache_path = SCRIPT_DIR / "nexus_analysis_cache.json"
+    cfg = settings.cfg or {}
+    ai_cfg = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    key = key or str(ai_cfg.get("api_key") or "").strip()
+    if not key or key.upper().startswith(("YOUR_", "YOUR-")):
+        log.warning("[Nexus AI] Нет ключа OpenRouter; использую только сохранённый анализ.")
+        return fetch_nexus_mod_records(mod_ids, cache_path, 0)
+
+    records = fetch_nexus_mod_records(
+        mod_ids,
+        cache_path,
+        args.nexus_max_requests,
+    )
+    pending = [
+        record for _, record in sorted(records.items())
+        if record.description and record.recommendation is None
+    ]
+    max_mods = args.nexus_ai_max_mods
+    if len(pending) > max_mods:
+        log.info(
+            "[Nexus AI] За лимитом анализа оставлено %d модов; максимум за запуск: %d",
+            len(pending) - max_mods,
+            max_mods,
+        )
+    pending = pending[:max_mods]
+    if not pending:
+        log.info("[Nexus AI] Все доступные страницы уже проанализированы или недоступны.")
+        return records
+
+    configured_models = ai_cfg.get("models")
+    if not isinstance(configured_models, list) or not configured_models:
+        configured_models = DEFAULT_AI_MODELS
+    models_value = [args.ai_model] if args.ai_model else configured_models
+    models = [str(model) for model in models_value if str(model).strip()]
+    if not models:
+        log.error("[Nexus AI] Список моделей OpenRouter пуст.")
+        return records
+
+    _run_nexus_analysis_batches(pending, models, key, records, cache_path)
 
     return records
 

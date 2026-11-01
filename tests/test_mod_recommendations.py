@@ -839,6 +839,74 @@ class InstallationNoteTests(unittest.TestCase):
         self.assertEqual(result[1234].recommendation.method, "vortex")
         save.assert_called_once()
 
+    def test_analysis_runner_persists_each_successful_batch(self) -> None:
+        records = {
+            mod_id: mod_recommendations.NexusModRecord(
+                mod_id=mod_id,
+                name=f"Mod {mod_id}",
+                summary="",
+                description=f"Public page for mod {mod_id}",
+                category="Gameplay",
+                tags=(),
+                fetched_at=1,
+            )
+            for mod_id in (1234, 5678)
+        }
+        response = [{
+            "i": 0,
+            "method": "manual",
+            "category": "gameplay",
+            "impact": "medium",
+            "confidence": 70,
+            "summary_ru": "Описание мода.",
+            "rationale_ru": "Установка описана автором.",
+        }]
+        args = Namespace(
+            nexus_max_requests=10,
+            nexus_ai_max_mods=2,
+            ai_model=None,
+        )
+        settings = Namespace(cfg={
+            "ai": {
+                "api_key": "test-key",
+                "models": ["test/model"],
+            }
+        })
+        persisted: list[list[int]] = []
+        persisted_paths: list[Path] = []
+
+        def capture_persisted(records_to_save: dict[int, mod_recommendations.NexusModRecord],
+                              path: Path) -> None:
+            persisted.append(sorted(
+                mod_id for mod_id, record in records_to_save.items()
+                if record.recommendation is not None
+            ))
+            persisted_paths.append(path)
+
+        with patch("nexus_links.fetch_nexus_mod_records", return_value=records):
+            with patch("nexus_links.ANALYSIS_BATCH_SIZE", 1):
+                with patch(
+                    "nexus_links._ai_ask",
+                    side_effect=[("test/model", response), ("test/model", response)],
+                ) as ask:
+                    with patch(
+                        "nexus_links.save_nexus_mod_records",
+                        side_effect=capture_persisted,
+                    ):
+                        result = nexus_links.run_nexus_ai_analysis(
+                            [Namespace(mod_id=1234), Namespace(mod_id=5678)],
+                            settings,
+                            args,
+                        )
+
+        self.assertEqual(ask.call_count, 2)
+        self.assertEqual(persisted, [[1234], [1234, 5678]])
+        self.assertEqual(
+            persisted_paths,
+            [nexus_links.SCRIPT_DIR / "nexus_analysis_cache.json"] * 2,
+        )
+        self.assertTrue(all(record.recommendation is not None for record in result.values()))
+
 
 if __name__ == "__main__":
     unittest.main()
