@@ -21,6 +21,41 @@ def archive(file_id: int, source: str, title: str, mod_id: int | None = None) ->
 
 
 class GroupingTests(unittest.TestCase):
+    def test_scan_nexus_data_loads_details_for_valid_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            settings = nexus_links.Settings(
+                downloads=root / "Downloads",
+                vortex=None,
+                game=None,
+                out=root / "dashboard.html",
+                quarantine=root / "quarantine",
+            )
+            note = InstallationNote(786, "manual", "Extract the archive", 1.0)
+            rows = [
+                nexus_links.ModRow(786, "Known Mod", [], "", "", [], set(), ""),
+                nexus_links.ModRow(None, "Unknown Mod", [], "", "", [], set(), ""),
+            ]
+            args = Namespace(
+                nexus_analyze=False,
+                nexus_details=True,
+                nexus_max_requests=3,
+            )
+
+            with (
+                patch("nexus_links.SCRIPT_DIR", root),
+                patch("nexus_links.load_installation_notes", return_value={786: note}) as load_notes,
+                patch("nexus_links.run_nexus_ai_analysis") as analyze,
+            ):
+                notes, records = nexus_links._load_scan_nexus_data(rows, settings, args)
+
+        self.assertEqual(notes, {786: note})
+        self.assertEqual(records, {})
+        self.assertEqual(load_notes.call_args.args[0], {786})
+        self.assertEqual(load_notes.call_args.args[1], root / "nexus_install_cache.json")
+        self.assertEqual(load_notes.call_args.args[2], 3)
+        analyze.assert_not_called()
+
     def test_cmd_scan_applies_ai_ids_and_prefers_nexus_analysis(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

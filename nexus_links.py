@@ -1891,6 +1891,24 @@ def _apply_ai_known_ids(
     return rows
 
 
+def _load_scan_nexus_data(
+    rows: list[ModRow],
+    settings: Settings,
+    args: argparse.Namespace,
+) -> tuple[dict[int, InstallationNote], dict[int, NexusModRecord]]:
+    installation_notes: dict[int, InstallationNote] = {}
+    nexus_records: dict[int, NexusModRecord] = {}
+    if args.nexus_analyze:
+        nexus_records = run_nexus_ai_analysis(rows, settings, args)
+    elif args.nexus_details:
+        installation_notes = load_installation_notes(
+            {r.mod_id for r in rows if is_valid_mod_id(r.mod_id)},
+            SCRIPT_DIR / "nexus_install_cache.json",
+            args.nexus_max_requests,
+        )
+    return installation_notes, nexus_records
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     s = load_settings(args)
     if not (s.downloads or s.vortex):
@@ -1914,16 +1932,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     # Английские названия от ИИ тоже сверяются со словарём; при совпадении строки пересобираются.
     rows = _apply_ai_known_ids(archives, blacklist, rows, ai_map)
 
-    installation_notes: dict[int, InstallationNote] = {}
-    nexus_records: dict[int, NexusModRecord] = {}
-    if args.nexus_analyze:
-        nexus_records = run_nexus_ai_analysis(rows, s, args)
-    elif args.nexus_details:
-        installation_notes = load_installation_notes(
-            {r.mod_id for r in rows if is_valid_mod_id(r.mod_id)},
-            SCRIPT_DIR / "nexus_install_cache.json",
-            args.nexus_max_requests,
-        )
+    installation_notes, nexus_records = _load_scan_nexus_data(rows, s, args)
 
     s.out.parent.mkdir(parents=True, exist_ok=True)
     s.out.write_text(
