@@ -7,6 +7,7 @@ from datetime import datetime
 import html
 import json
 import logging
+import math
 from pathlib import Path
 import re
 import time
@@ -232,6 +233,7 @@ def _stale_mod_ids(mod_ids: set[int], cached_at: dict[int, float], now: float) -
         if mod_id > 0
         and (
             mod_id not in cached_at
+            or not math.isfinite(cached_at[mod_id])
             or now - cached_at[mod_id] >= CACHE_TTL_SECONDS
         )
     ]
