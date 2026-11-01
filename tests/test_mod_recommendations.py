@@ -122,6 +122,23 @@ class OpenRouterLimitTests(unittest.TestCase):
 
 
 class AITests(unittest.TestCase):
+    def test_openrouter_request_uses_supplied_key_as_bearer_token(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.read.return_value = b'{"ok": true}'
+
+        with patch("nexus_links.urllib.request.urlopen", return_value=response) as urlopen:
+            result = nexus_links._http_json(
+                "https://openrouter.ai/api/v1/chat/completions",
+                "test-secret",
+                {"model": "test/model"},
+            )
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-secret")
+
     def test_cached_ai_info_normalizes_records_and_rejects_untrusted_fields(self) -> None:
         rows = [
             nexus_links.ModRow(None, "Example Mod", [], "", "", [], set(), ""),
