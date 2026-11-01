@@ -2035,6 +2035,47 @@ def _load_clean_selection(path: Path) -> list[dict]:
     return entries
 
 
+def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str) -> int:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = quarantine / stamp
+    trash = None
+    if mode == "trash":
+        try:
+            from send2trash import send2trash as trash  # type: ignore[import-not-found]
+        except ImportError:
+            log.error("Для --mode trash нужен пакет send2trash: pip install send2trash "
+                      "(или используйте --mode quarantine).")
+            return 2
+    else:
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = (run_dir if mode != "trash" else quarantine) / f"clean_{stamp}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    with open(log_path, "w", encoding="utf-8") as lf:
+        for entry in plan:
+            src = Path(entry["path"])
+            try:
+                if trash:
+                    trash(str(src))
+                    lf.write(f"TRASH\t{src}\n")
+                else:
+                    dest = run_dir / src.name
+                    n = 1
+                    while dest.exists():
+                        dest = run_dir / f"{src.stem}__{n}{src.suffix}"
+                        n += 1
+                    shutil.move(str(src), str(dest))
+                    lf.write(f"MOVE\t{src}\t{dest}\n")
+                moved += 1
+            except OSError as exc:
+                log.error("Не удалось обработать %s: %s", src, exc)
+                lf.write(f"FAIL\t{src}\t{exc}\n")
+    where = "в Корзину" if trash else f"в {run_dir}"
+    log.info("Готово: обработано %d из %d файлов (%s). Журнал: %s", moved, len(plan), where, log_path)
+    return 0 if moved == len(plan) else 1
+
+
 def cmd_clean(args: argparse.Namespace) -> int:
     s = load_settings(args)
     if s.downloads is None:
@@ -2065,44 +2106,7 @@ def cmd_clean(args: argparse.Namespace) -> int:
     if not plan:
         return 0
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = s.quarantine / stamp
-    trash = None
-    if args.mode == "trash":
-        try:
-            from send2trash import send2trash as trash  # type: ignore[import-not-found]
-        except ImportError:
-            log.error("Для --mode trash нужен пакет send2trash: pip install send2trash "
-                      "(или используйте --mode quarantine).")
-            return 2
-    else:
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-    log_path = (run_dir if args.mode != "trash" else s.quarantine) / f"clean_{stamp}.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    moved = 0
-    with open(log_path, "w", encoding="utf-8") as lf:
-        for e in plan:
-            src = Path(e["path"])
-            try:
-                if trash:
-                    trash(str(src))
-                    lf.write(f"TRASH\t{src}\n")
-                else:
-                    dest = run_dir / src.name
-                    n = 1
-                    while dest.exists():
-                        dest = run_dir / f"{src.stem}__{n}{src.suffix}"
-                        n += 1
-                    shutil.move(str(src), str(dest))
-                    lf.write(f"MOVE\t{src}\t{dest}\n")
-                moved += 1
-            except OSError as exc:
-                log.error("Не удалось обработать %s: %s", src, exc)
-                lf.write(f"FAIL\t{src}\t{exc}\n")
-    where = "в Корзину" if trash else f"в {run_dir}"
-    log.info("Готово: обработано %d из %d файлов (%s). Журнал: %s", moved, len(plan), where, log_path)
-    return 0
+    return _apply_clean_plan(plan, s.quarantine, args.mode)
 
 
 # ==================== CLI ====================
