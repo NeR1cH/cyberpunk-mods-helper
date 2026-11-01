@@ -1,6 +1,6 @@
 from argparse import Namespace
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import tempfile
@@ -109,6 +109,40 @@ class OpenRouterLimitTests(unittest.TestCase):
             with patch.object(openrouter_limits, "_requests_this_process", 0):
                 with self.assertLogs("modaudit", level="ERROR"):
                     self.assertFalse(openrouter_limits.reserve_request(usage_path))
+
+    def test_invalid_daily_ledger_dates_fail_closed(self) -> None:
+        invalid_dates = [None, [], "not-a-date", "2026-2-3", "9999-12-31"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            usage_path = Path(temp_dir) / "usage.json"
+            for stored_date in invalid_dates:
+                with self.subTest(stored_date=stored_date):
+                    usage_path.write_text(
+                        json.dumps({"date": stored_date, "requests": 0}),
+                        encoding="utf-8",
+                    )
+                    with self.assertLogs("modaudit", level="ERROR"):
+                        self.assertIsNone(openrouter_limits.remaining_daily_requests(usage_path))
+
+                    with patch.object(openrouter_limits, "_requests_this_process", 0):
+                        with self.assertLogs("modaudit", level="ERROR"):
+                            self.assertFalse(openrouter_limits.reserve_request(usage_path))
+
+    def test_old_daily_ledger_resets_only_after_valid_date_check(self) -> None:
+        today = datetime.now(timezone.utc).date()
+        yesterday = (today - timedelta(days=1)).isoformat()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            usage_path = Path(temp_dir) / "usage.json"
+            usage_path.write_text(
+                json.dumps({"date": yesterday, "requests": 10}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(openrouter_limits.remaining_daily_requests(usage_path), 10)
+            with patch.object(openrouter_limits, "_requests_this_process", 0):
+                self.assertTrue(openrouter_limits.reserve_request(usage_path))
+
+            usage = json.loads(usage_path.read_text(encoding="utf-8"))
+            self.assertEqual(usage, {"date": today.isoformat(), "requests": 1})
 
     def test_cached_analysis_page_count_reports_new_page_progress(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
 import logging
 import os
@@ -90,8 +90,25 @@ def _daily_usage_count(data: object, today: str, path: Path) -> int | None:
     if not isinstance(data, dict):
         log.error("[AI] Счётчик лимита OpenRouter имеет неверный формат: %s", path)
         return None
-    if data.get("date") != today:
+    stored_date = data.get("date")
+    if not isinstance(stored_date, str):
+        log.error("[AI] Дата счётчика лимита OpenRouter имеет неверный формат: %s", path)
+        return None
+    try:
+        stored_day = date.fromisoformat(stored_date)
+    except ValueError:
+        log.error("[AI] Дата счётчика лимита OpenRouter повреждена: %s", path)
+        return None
+    if stored_day.isoformat() != stored_date:
+        log.error("[AI] Дата счётчика лимита OpenRouter имеет неверный формат: %s", path)
+        return None
+
+    today_date = date.fromisoformat(today)
+    if stored_day < today_date:
         return 0
+    if stored_day > today_date:
+        log.error("[AI] Дата счётчика лимита OpenRouter находится в будущем: %s", path)
+        return None
 
     used = data.get("requests")
     if not isinstance(used, int) or isinstance(used, bool) or used < 0:
