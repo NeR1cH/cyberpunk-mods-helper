@@ -1864,6 +1864,33 @@ def _scan_archive_roots(
     return archives, scanned_folders
 
 
+def _prepare_scan_archives(archives: list[Archive]) -> None:
+    rejected = [a for a in archives if a.meta.rejected_id is not None]
+    if rejected:
+        log.info("[!] Отброшено ложных Mod ID (вне 1–%d): %d архивов — ссылки на них только через поиск/ИИ",
+                 MAX_MOD_ID, len(rejected))
+        for a in rejected[:10]:
+            log.info("    %s  (число %d)", a.name, a.meta.rejected_id)
+
+    mark_exact_duplicates(archives)
+    mark_versions(archives)
+
+
+def _apply_ai_known_ids(
+    archives: list[Archive],
+    blacklist: dict[int, str],
+    rows: list[ModRow],
+    ai_map: dict[str, AIInfo],
+) -> list[ModRow]:
+    ai_ids = known_ids_from_ai(rows, ai_map)
+    if ai_ids:
+        rows = build_rows(archives, blacklist, ai_ids)
+    n_known = sum(1 for r in rows if r.mod_id is not None and all(f.meta.mod_id is None for f in r.files))
+    if n_known:
+        log.info("[ID] Опознано по встроенному словарю KNOWN_MOD_IDS: %d (прямая ссылка вместо поиска)", n_known)
+    return rows
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     s = load_settings(args)
     if not (s.downloads or s.vortex):
@@ -1876,29 +1903,16 @@ def cmd_scan(args: argparse.Namespace) -> int:
         log.error("Не найдена ни одна папка для сканирования. Проверьте downloads/vortex в config.json.")
         return 2
 
-    rejected = [a for a in archives if a.meta.rejected_id is not None]
-    if rejected:
-        log.info("[!] Отброшено ложных Mod ID (вне 1–%d): %d архивов — ссылки на них только через поиск/ИИ",
-                 MAX_MOD_ID, len(rejected))
-        for a in rejected[:10]:
-            log.info("    %s  (число %d)", a.name, a.meta.rejected_id)
-
-    mark_exact_duplicates(archives)
-    mark_versions(archives)
+    _prepare_scan_archives(archives)
     blacklist = load_blacklist()
-    rows = build_rows(archives, blacklist)   # известные моды опознаются по имени файла
+    rows = build_rows(archives, blacklist)
     core = check_game_core(s.game)
     game_mods = scan_game_mods(s.game)
     log.info("[*] Найдено элементов в известных папках модов игры: %d", len(game_mods))
     # Без AI-флагов подтягивается только кэш (ai_cache.json), сеть не используется.
     ai_map = run_ai(rows, s, args, online=bool(args.ai or args.ai_all or args.ai_auto))
     # Английские названия от ИИ тоже сверяются со словарём; при совпадении строки пересобираются.
-    ai_ids = known_ids_from_ai(rows, ai_map)
-    if ai_ids:
-        rows = build_rows(archives, blacklist, ai_ids)
-    n_known = sum(1 for r in rows if r.mod_id is not None and all(f.meta.mod_id is None for f in r.files))
-    if n_known:
-        log.info("[ID] Опознано по встроенному словарю KNOWN_MOD_IDS: %d (прямая ссылка вместо поиска)", n_known)
+    rows = _apply_ai_known_ids(archives, blacklist, rows, ai_map)
 
     installation_notes: dict[int, InstallationNote] = {}
     nexus_records: dict[int, NexusModRecord] = {}

@@ -1,3 +1,4 @@
+from argparse import Namespace
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,57 @@ def archive(file_id: int, source: str, title: str, mod_id: int | None = None) ->
 
 
 class GroupingTests(unittest.TestCase):
+    def test_cmd_scan_applies_ai_ids_and_prefers_nexus_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "nested" / "dashboard.html"
+            settings = nexus_links.Settings(
+                downloads=root / "Downloads",
+                vortex=None,
+                game=None,
+                out=output,
+                quarantine=root / "quarantine",
+            )
+            mod_archive = archive(0, "downloads", "Unknown Mod")
+            ai_map = {
+                nexus_links.norm_title("Unknown Mod"): nexus_links.AIInfo(
+                    en="Cyber Engine Tweaks",
+                    conf="high",
+                )
+            }
+            args = Namespace(
+                ai=False,
+                ai_all=False,
+                ai_auto=False,
+                nexus_analyze=True,
+                nexus_details=True,
+                nexus_max_requests=10,
+                no_open=True,
+            )
+            with (
+                patch("nexus_links.load_settings", return_value=settings),
+                patch("nexus_links._scan_archive_roots", return_value=([mod_archive], 1)),
+                patch("nexus_links.load_blacklist", return_value={}),
+                patch("nexus_links.check_game_core", return_value={}),
+                patch("nexus_links.scan_game_mods", return_value=[]),
+                patch("nexus_links.run_ai", return_value=ai_map) as run_ai,
+                patch("nexus_links.run_nexus_ai_analysis", return_value={}) as analyze,
+                patch("nexus_links.load_installation_notes") as load_notes,
+                patch("nexus_links.render_dashboard", return_value="Дашборд") as render,
+                patch("nexus_links.webbrowser.open") as open_browser,
+            ):
+                result = nexus_links.cmd_scan(args)
+
+                self.assertEqual(result, 0)
+                run_ai.assert_called_once()
+                self.assertFalse(run_ai.call_args.kwargs["online"])
+                self.assertIsNone(run_ai.call_args.args[0][0].mod_id)
+                analyze.assert_called_once()
+                load_notes.assert_not_called()
+                self.assertEqual(render.call_args.args[1][0].mod_id, 107)
+                self.assertEqual(output.read_text(encoding="utf-8"), "Дашборд")
+                open_browser.assert_not_called()
+
     def test_archive_root_scan_preserves_order_ids_and_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
