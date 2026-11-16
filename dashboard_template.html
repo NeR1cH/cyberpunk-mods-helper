@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<meta name="api-token" content="">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#07060f">
 <title>Cyberpunk 2077 — Мод-Аудитор</title>
@@ -134,7 +135,7 @@
     .filter-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 
     /* Кнопки со скошенными углами */
-    .btn, .btn-delete, .btn-reveal {
+    .btn, .btn-clean, .btn-reveal {
         font-family: var(--font-ui);
         font-size: 12px;
         font-weight: 600;
@@ -151,13 +152,52 @@
     }
     .btn:hover { background: rgba(0, 240, 255, 0.2); color: var(--text-bright); }
     .btn.active { background: var(--accent-yellow); color: #000; font-weight: 700; box-shadow: inset 2px 0 0 #000; }
-    .btn-delete {
-        background: rgba(255, 0, 60, 0.16);
-        color: #ff4d73;
-        box-shadow: inset 2px 0 0 var(--accent-red);
+    .btn:disabled, .btn:disabled:hover { background: rgba(0, 240, 255, 0.08); color: var(--text-main); opacity: .4; cursor: not-allowed; }
+    .btn-clean {
+        background: rgba(252, 238, 10, 0.14);
+        color: var(--accent-yellow);
+        box-shadow: inset 2px 0 0 var(--accent-yellow);
     }
-    .btn-delete:hover:not(:disabled) { background: var(--accent-red); color: #fff; }
-    .btn-delete:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-clean:hover:not(:disabled) { background: var(--accent-yellow); color: #000; }
+    .btn-clean:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* Окно предпросмотра и результата переноса в карантин */
+    .clean-dialog {
+        width: min(760px, calc(100vw - 32px));
+        max-height: calc(100vh - 48px);
+        margin: auto;   /* общий сброс отступов убирает штатное центрирование <dialog> */
+        padding: 18px 20px;
+        background: #100d24;
+        color: var(--text-main);
+        border: 1px solid rgba(252, 238, 10, 0.45);
+        border-radius: 2px;
+    }
+    .clean-dialog::backdrop { background: rgba(4, 3, 12, 0.78); }
+    .clean-dialog h2 { margin: 0 0 10px; font-size: 16px; color: var(--accent-yellow); }
+    .clean-summary { margin: 0 0 10px; font-size: 13px; color: var(--text-bright); }
+    .clean-where { margin: 10px 0 14px; font-size: 11px; color: var(--text-dim); word-break: break-all; }
+    .clean-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        max-height: 46vh;
+        overflow: auto;
+        border: 1px solid var(--border-color);
+    }
+    .clean-list li {
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        padding: 6px 10px;
+        font-size: 12px;
+        border-bottom: 1px solid var(--border-color);
+    }
+    .clean-list li:last-child { border-bottom: 0; }
+    .clean-list .clean-mark { flex: 0 0 auto; font-weight: 700; }
+    .clean-list .clean-name { flex: 1 1 auto; word-break: break-all; color: var(--text-bright); }
+    .clean-list .clean-detail { flex: 0 0 auto; max-width: 48%; text-align: right; color: var(--text-dim); }
+    .clean-list li.clean-ok .clean-mark { color: var(--accent-green); }
+    .clean-list li.clean-skip .clean-mark, .clean-list li.clean-skip .clean-detail { color: #ff6b85; }
 
     /* Баннер очистки дубликатов */
     .dup-banner {
@@ -181,6 +221,14 @@
         font-weight: 700;
         padding: 6px 16px;
         clip-path: var(--chamfer);
+    }
+    .selection-pill {
+        border: 1px solid var(--accent-yellow);
+        color: var(--accent-yellow);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        font-weight: 700;
+        padding: 5px 16px;
     }
     .dup-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
@@ -348,6 +396,7 @@
         z-index: 10;
     }
     .toast.show { opacity: 1; transform: none; }
+    .page-footer { margin: 18px 0 6px; text-align: center; font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); }
     .toast.err { box-shadow: inset 3px 0 0 var(--accent-red); }
 
     @media (max-width: 720px) {
@@ -430,7 +479,7 @@ td{border-bottom-color:rgba(43,37,80,.8)}
 tbody tr:nth-child(even) td{background:rgba(255,255,255,.015)}
 tbody tr:hover td{background:rgba(0,240,255,.08)}
 .badge,.chip{font-family:var(--font-mono);letter-spacing:.04em;text-shadow:0 0 6px currentColor}
-.btn,.btn-delete{text-transform:uppercase;letter-spacing:.06em}
+.btn,.btn-clean{text-transform:uppercase;letter-spacing:.06em}
 .search-input{border-color:rgba(0,240,255,.5);caret-color:var(--accent-yellow)}.search-input::placeholder{color:#6f6a99}
 .toast{background:#17133a;z-index:70}
 /* загрузка */
@@ -468,10 +517,10 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     </header>
     <div class="ticker" aria-hidden="true"><div class="ticker-in" id="ticker"></div></div>
 
-    <section class="disk" aria-label="Занятое место архивами">
+    <section class="disk" id="diskUsage" aria-label="Занятое место архивами" data-downloads-label="@@DOWNLOADS_LABEL@@" data-vortex-label="@@VORTEX_LABEL@@">
         <div class="disk-figures">
-            <div><div class="fig-val fig-c" id="diskC">—</div><div class="fig-cap">Downloads, диск C:</div></div>
-            <div><div class="fig-val fig-d" id="diskD">—</div><div class="fig-cap">Vortex, диск D:</div></div>
+            <div><div class="fig-val fig-c" id="diskC">—</div><div class="fig-cap">@@DOWNLOADS_LABEL@@</div></div>
+            <div><div class="fig-val fig-d" id="diskD">—</div><div class="fig-cap">@@VORTEX_LABEL@@</div></div>
             <div><div class="fig-val fig-dup" id="diskDup">—</div><div class="fig-cap">Из них точные дубликаты в Downloads</div></div>
         </div>
         <div class="disk-bar" role="img" aria-label="Соотношение архивов в Downloads и Vortex">
@@ -490,13 +539,18 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
 
     <div id="dupBanner" class="dup-banner">
         <div class="dup-banner-text">
-            ⚡ <strong>Вкладка дубликатов.</strong> Найденные точные копии уже присутствуют в Vortex (диск D:). Их можно безопасно удалить из Downloads (диск C:).
+            ⚡ <strong>Точные копии.</strong> @@DUP_BANNER@@ Старые версии по умолчанию не отмечены: они определены по имени файла, а не по содержимому.
         </div>
-        <div class="savings-pill" id="savingsPill">Очистка дубликатов освободит: 0.0 ГБ на диске C:</div>
+        <div class="savings-pill" id="savingsPill">Очистка дубликатов освободит: —</div>
+        <div class="selection-pill" id="selectionPill" role="status" aria-live="polite">Выбрано: 0</div>
         <div class="dup-actions">
-            <button type="button" class="btn-delete" id="btnDeleteDups">🗑 Удалить дубликаты с диска</button>
-            <button type="button" class="btn" id="btnDownloadBat">💾 Скачать BAT-скрипт очистки</button>
-            <button type="button" class="btn" id="btnExportJson">📥 Экспорт JSON для clean</button>
+            <button type="button" class="btn" id="btnSelectDups">Выбрать все копии</button>
+            <button type="button" class="btn" id="btnSelectOld">Выбрать все старые</button>
+            <button type="button" class="btn" id="btnClearSelection">Снять выбор</button>
+        </div>
+        <div class="dup-actions">
+            <button type="button" class="btn-clean" id="btnCleanSelected" title="Сначала откроется предпросмотр: файлы проверяются заново и ничего не меняется, пока вы не нажмёте «Применить».">🧹 Перенести выбранное в карантин</button>
+            <button type="button" class="btn" id="btnExportJson" title="Тот же список для команды python nexus_links.py clean">📥 Экспорт JSON для clean</button>
         </div>
     </div>
 
@@ -509,8 +563,8 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
                     <th data-sort="name" tabindex="0" style="width: 260px;">Название мода<span class="sort-arrow"></span><div class="col-resizer"></div></th>
                     <th style="width: 90px;">Ссылка<div class="col-resizer"></div></th>
                     <th style="width: 240px;">Рекомендация<div class="col-resizer"></div></th>
-                    <th data-sort="size" tabindex="0" style="width: 380px;">В Downloads (C:)<span class="sort-arrow"></span><div class="col-resizer"></div></th>
-                    <th data-sort="size" tabindex="0" style="width: 380px;">В Vortex (D:)<span class="sort-arrow"></span><div class="col-resizer"></div></th>
+                    <th data-sort="size" tabindex="0" style="width: 380px;">В @@DOWNLOADS_LABEL@@<span class="sort-arrow"></span><div class="col-resizer"></div></th>
+                    <th data-sort="size" tabindex="0" style="width: 380px;">В @@VORTEX_LABEL@@<span class="sort-arrow"></span><div class="col-resizer"></div></th>
                 </tr>
             </thead>
             <tbody>
@@ -537,13 +591,33 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         </table>
     </div>
 
+    <dialog id="cleanDialog" class="clean-dialog" aria-labelledby="cleanTitle">
+        <h2 id="cleanTitle">Перенос в карантин</h2>
+        <p id="cleanSummary" class="clean-summary"></p>
+        <ul id="cleanList" class="clean-list"></ul>
+        <p id="cleanWhere" class="clean-where"></p>
+        <div class="dup-actions">
+            <button type="button" class="btn-clean" id="btnCleanApply" disabled>Применить</button>
+            <button type="button" class="btn" id="btnCleanClose">Отмена</button>
+        </div>
+    </dialog>
+
+    <footer class="page-footer">Cyberpunk 2077 Mod Auditor v@@VERSION@@ &bull; отчёт создан @@GENERATED@@</footer>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script id="modAuditData" type="application/json">
 @@FILE_DATA@@
 </script>
+<script id="modAuditMeta" type="application/json">
+@@PAGE_META@@
+</script>
 <script>
     let fileData = JSON.parse(document.getElementById('modAuditData').textContent);
+    const pageMeta = JSON.parse(document.getElementById('modAuditMeta').textContent);
+    // data-fid в разметке — это позиция записи в исходном списке; запоминаем её,
+    // чтобы связь с галочкой не терялась, когда из fileData убираются удалённые файлы.
+    fileData.forEach((f, i) => { f.fid = i; });
     let currentFilter = 'all';
 
     const $ = (sel, root = document) => root.querySelector(sel);
@@ -555,14 +629,69 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     const tbody = $('#modsTable tbody');
     const gameModsContainer = $('#gameModsContainer');
     const gameModsTbody = $('#gameModsTable tbody');
-    const isDupInDownloads = (f) => f.s === 'downloads' && f.vd === 'exact_dup';
+    // Подписи источников с настоящими дисками приходят из Python (data-атрибуты).
+    const downloadsLabel = $('#diskUsage').getAttribute('data-downloads-label') || 'Downloads';
+    const vortexLabel = $('#diskUsage').getAttribute('data-vortex-label') || 'Vortex';
 
-    // ---------- Утилиты ----------
+    // <pure-logic>
+    // Чистые функции без DOM. Их исполняет tests/test_dashboard_js.py под Node.js,
+    // поэтому здесь нельзя обращаться к document, window и переменным страницы.
     function fmtSize(bytes) {
         if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' ГБ';
         if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' МБ';
         return Math.round(bytes / 1024) + ' КБ';
     }
+
+    function baseName(path) {
+        return String(path).split(/[\\/]/).pop();
+    }
+
+    const isCandidate = (f) => f.s === 'downloads' && (f.vd === 'exact_dup' || f.vd === 'older');
+
+    // Что чистить, решают отмеченные галочки (их data-fid), а не вердикт файла.
+    function pickSelected(files, selectedIds) {
+        return files.filter(f => isCandidate(f) && selectedIds.has(f.fid));
+    }
+
+    // Формат selection.json: его читают команда clean и /api/clean/*.
+    function buildSelection(files, created) {
+        return {
+            created,
+            files: files.map(f => ({
+                path: f.p,
+                size: f.z,
+                mtime: f.m,
+                sha256: f.h,
+                reason: f.vd,
+                keeper: f.k
+            }))
+        };
+    }
+
+    // Отказы сервера → текст для пользователя.
+    function serverMessage(status) {
+        const messages = {
+            bad_token: 'Сервер был перезапущен или отчёт создан старой версией. Обновите страницу (F5); если не помогло — запустите сканирование заново.',
+            forbidden_host: 'Сервер принимает запросы только по адресу http://localhost:8000.',
+            unsupported_media_type: 'Сервер не принял запрос. Обновите страницу (F5).',
+            payload_too_large: 'Слишком много файлов за один раз. Отметьте меньше или используйте «Экспорт JSON для clean».',
+            outside_allowed_folders: 'Сервер открывает в Проводнике только папки Downloads, Vortex, игры и карантина из config.json.',
+            method_not_allowed: 'Сервер не принял запрос. Обновите страницу (F5).',
+            downloads_not_configured: 'В config.json не задана папка downloads, поэтому очистка из дашборда отключена. Укажите её и перезапустите start.bat.',
+            preview_required: 'Список изменился после предпросмотра. Откройте предпросмотр заново.',
+            clean_in_progress: 'Перенос уже выполняется. Дождитесь его завершения.',
+            clean_failed: 'Не удалось создать папку карантина или журнал. Подробности — в окне сервера.',
+            bad_request: 'Сервер не принял список файлов. Обновите страницу и повторите.',
+            forbidden_origin: 'Сервер отклонил запрос. Откройте дашборд по адресу http://localhost:8000, а не как файл или по другому адресу.',
+            not_found: 'Сервер устарел: обновите server.py вместе с остальными файлами проекта.',
+            gone: 'Сервер устарел: обновите server.py вместе с остальными файлами проекта.'
+        };
+        return messages[status] || 'Сервер вернул неожиданный ответ. Подробности — в окне сервера.';
+    }
+    // </pure-logic>
+
+    const selectedIds = new Set();
+    const selectedFiles = () => pickSelected(fileData, selectedIds);
 
     let toastTimer;
     function toast(text, isErr) {
@@ -593,22 +722,25 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         }
     }
 
+    // Токен запуска сервер вписывает в <meta name="api-token"> при отдаче страницы.
+    const apiToken = (document.querySelector('meta[name="api-token"]') || {}).content || '';
+
     function postJson(url, payload) {
         return fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-ModAudit-Token': apiToken },
             body: JSON.stringify(payload)
         });
     }
 
     // ---------- 1. Виджет занятого места ----------
     function updateDisk() {
-        let c = 0, d = 0, dup = 0, dupCount = 0;
+        let c = 0, d = 0, dup = 0;
         fileData.forEach(f => {
             const z = Number(f.z) || 0;
             if (f.s === 'downloads') {
                 c += z;
-                if (f.vd === 'exact_dup') { dup += z; dupCount++; }
+                if (f.vd === 'exact_dup') dup += z;
             } else {
                 d += z;
             }
@@ -620,12 +752,46 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         $('#segKeep').style.width = ((c - dup) / total * 100) + '%';
         $('#segDup').style.width = (dup / total * 100) + '%';
         $('#segVx').style.width = (d / total * 100) + '%';
-        $('#savingsPill').textContent = 'Очистка дубликатов освободит: ' + fmtSize(dup) + ' на диске C:';
-        const delBtn = $('#btnDeleteDups');
-        delBtn.textContent = '🗑 Удалить дубликаты (' + dupCount + ')';
-        delBtn.disabled = dupCount === 0;
+        $('#savingsPill').textContent = 'Очистка дубликатов освободит: ' + fmtSize(dup) + ' в ' + downloadsLabel;
     }
     requestAnimationFrame(() => requestAnimationFrame(updateDisk));
+
+    // ---------- 1a. Выбор файлов для очистки ----------
+    const selectionBoxes = () => $$('#modsTable input.sel');
+
+    function updateSelection() {
+        selectedIds.clear();
+        selectionBoxes().forEach(box => {
+            if (box.checked) selectedIds.add(Number(box.getAttribute('data-fid')));
+        });
+        const chosen = selectedFiles();
+        const bytes = chosen.reduce((s, f) => s + (Number(f.z) || 0), 0);
+        $('#selectionPill').textContent = 'Выбрано: ' + chosen.length + ' (' + fmtSize(bytes) + ')';
+        const cleanBtn = $('#btnCleanSelected');
+        cleanBtn.textContent = '🧹 Перенести выбранное в карантин (' + chosen.length + ')';
+        cleanBtn.disabled = chosen.length === 0;
+        $('#btnExportJson').disabled = chosen.length === 0;
+        $('#btnClearSelection').disabled = chosen.length === 0;
+    }
+
+    function setSelection(matches, checked) {
+        const byFid = new Map(fileData.map(f => [f.fid, f]));
+        selectionBoxes().forEach(box => {
+            const f = byFid.get(Number(box.getAttribute('data-fid')));
+            if (f && matches(f)) box.checked = checked;
+        });
+        updateSelection();
+    }
+
+    tbody.addEventListener('change', (e) => {
+        if (e.target.matches('input.sel')) updateSelection();
+    });
+    $('#btnSelectDups').addEventListener('click', () => setSelection(f => f.vd === 'exact_dup', true));
+    $('#btnSelectOld').addEventListener('click', () => setSelection(f => f.vd === 'older', true));
+    $('#btnClearSelection').addEventListener('click', () => setSelection(() => true, false));
+    // pageshow: браузер может восстановить состояние галочек при возврате на страницу.
+    window.addEventListener('pageshow', updateSelection);
+    updateSelection();
 
     // ---------- 2. Фильтры ----------
     if (filterButtons.length) filterButtons[0].classList.add('active');
@@ -635,7 +801,7 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
             filterButtons.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             currentFilter = btn.getAttribute('data-filter');
-            dupBanner.style.display = (currentFilter === 'dup') ? 'flex' : 'none';
+            dupBanner.style.display = (currentFilter === 'dup' || currentFilter === 'old') ? 'flex' : 'none';
             applyFilters();
         });
     });
@@ -791,11 +957,11 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
                         blacklist_write_failed: 'Не удалось сохранить blacklist.json.',
                         bad_reason: 'Причина должна содержать от 1 до 500 символов.'
                     };
-                    toast(messages[body.status] || 'Не удалось изменить чёрный список.', true);
+                    toast(messages[body.status] || serverMessage(body.status), true);
                     return;
                 }
                 if (removing) {
-                    const builtin = [786, 3560, 4088].includes(modId);
+                    const builtin = (pageMeta.builtin_blacklist || []).includes(modId);
                     if (builtin) {
                         blacklistBtn.textContent = 'Встроенный список';
                         blacklistBtn.disabled = true;
@@ -826,6 +992,11 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
                     toast('Не удалось открыть папку в Проводнике.');
                     return;
                 }
+                if (body.status) {   // сервер работает, но отказал — объясняем, а не молчим
+                    flash(revealBtn, 'Не открыто', 'btn-err');
+                    toast(serverMessage(body.status), true);
+                    return;
+                }
                 throw new Error('server ' + res.status);
             } catch (err) {
                 await copyPath(path);
@@ -838,28 +1009,72 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         }
     });
 
-    // ---------- 5. Удаление дубликатов через сервер ----------
-    $('#btnDeleteDups').addEventListener('click', async () => {
-        const doomed = fileData.filter(isDupInDownloads);
-        if (!doomed.length) { toast('Точных копий для удаления нет.'); return; }
-        const bytes = doomed.reduce((s, f) => s + (Number(f.z) || 0), 0);
-        if (!confirm('Удалить файлов из Downloads: ' + doomed.length + ' (' + fmtSize(bytes) + ')?\nДействие необратимо.')) return;
+    // ---------- 5. Перенос выбранного в карантин через сервер ----------
+    // Порядок всегда один: предпросмотр (ничего не меняет) → «Применить» → карантин.
+    const cleanDialog = $('#cleanDialog');
+    const cleanApplyBtn = $('#btnCleanApply');
+    const cleanCloseBtn = $('#btnCleanClose');
+    let cleanPending = null;    // { files, confirm } — то, что показал предпросмотр
+    let cleanBusy = false;
 
-        const gone = new Set();
-        let failed = 0;
-        for (const f of doomed) {
-            try {
-                const res = await postJson('/api/delete', { path: f.p });
-                if (res.ok || res.status === 404) gone.add(f.p); else failed++;
-            } catch (err) {
-                if (!gone.size && !failed) {
-                    toast('Сервер не запущен. Запустите server.py или скачайте BAT-скрипт.', true);
-                    return;
-                }
-                failed++;
-            }
+    function cleanRow(ok, path, detail) {
+        const li = document.createElement('li');
+        li.className = ok ? 'clean-ok' : 'clean-skip';
+        const mark = document.createElement('span');
+        mark.className = 'clean-mark';
+        mark.textContent = ok ? '✔' : '✖';
+        const name = document.createElement('span');
+        name.className = 'clean-name';
+        name.textContent = baseName(path) || '(без имени)';
+        name.title = path;
+        const info = document.createElement('span');
+        info.className = 'clean-detail';
+        info.textContent = detail;
+        li.append(mark, name, info);
+        return li;
+    }
+
+    function showCleanDialog(summary, rows, where, canApply, closeLabel) {
+        $('#cleanSummary').textContent = summary;
+        $('#cleanList').replaceChildren(...rows);
+        $('#cleanList').hidden = rows.length === 0;
+        $('#cleanWhere').textContent = where;
+        cleanApplyBtn.hidden = !canApply;
+        cleanApplyBtn.disabled = !canApply;
+        cleanCloseBtn.textContent = closeLabel;
+        cleanCloseBtn.disabled = false;
+        if (!cleanDialog.open) {
+            if (typeof cleanDialog.showModal === 'function') cleanDialog.showModal();
+            else cleanDialog.setAttribute('open', '');
         }
+    }
 
+    function closeCleanDialog() {
+        cleanPending = null;
+        if (typeof cleanDialog.close === 'function') cleanDialog.close();
+        else cleanDialog.removeAttribute('open');
+    }
+
+    function setCleanBusy(busy, summary) {
+        cleanBusy = busy;
+        cleanApplyBtn.disabled = busy || cleanApplyBtn.hidden;
+        cleanCloseBtn.disabled = busy;
+        if (summary) $('#cleanSummary').textContent = summary;
+    }
+
+    async function cleanCall(url, payload) {
+        let res;
+        try {
+            res = await postJson(url, payload);
+        } catch (err) {
+            return { error: 'Сервер не запущен. Запустите start.bat (или python server.py) либо используйте «Экспорт JSON для clean».' };
+        }
+        const body = await res.json().catch(() => ({}));
+        return res.ok ? { body } : { error: serverMessage(body.status) };
+    }
+
+    function removeFilesFromPage(paths) {
+        const gone = new Set(paths);
         $$('.file-item').forEach(item => {
             const btn = $('[data-copy-path]', item);
             if (btn && gone.has(btn.getAttribute('data-copy-path'))) {
@@ -872,67 +1087,78 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         });
         fileData = fileData.filter(f => !gone.has(f.p));
         updateDisk();
-        toast('Удалено файлов: ' + gone.size + (failed ? ', не удалось: ' + failed : '') + '.', failed > 0);
+        updateSelection();
+    }
+
+    $('#btnCleanSelected').addEventListener('click', async () => {
+        const chosen = selectedFiles();
+        if (!chosen.length) { toast('Ничего не выбрано.'); return; }
+        const files = buildSelection(chosen, new Date().toISOString()).files;
+        showCleanDialog('', [], '', false, 'Отмена');
+        setCleanBusy(true, 'Проверяю файлы… У точных копий заново считается SHA-256, для больших архивов это занимает время.');
+        const { body, error } = await cleanCall('/api/clean/preview', { files });
+        setCleanBusy(false);
+        if (error) { closeCleanDialog(); toast(error, true); return; }
+
+        const rows = body.files.map(f => cleanRow(!f.problem, f.path, f.problem || fmtSize(Number(f.size) || 0)));
+        cleanPending = { files, confirm: body.confirm };
+        showCleanDialog(
+            'К переносу: ' + body.ok_count + ' (' + fmtSize(body.total_size) + '). Пропущено: ' + body.skipped_count
+                + '. Пока ничего не изменено.',
+            rows,
+            'Файлы будут перенесены в карантин: ' + body.quarantine + '. Оттуда их можно вернуть вручную.',
+            body.ok_count > 0,
+            'Отмена'
+        );
     });
 
-    // ---------- 6. Скачивание BAT-скрипта очистки точных дубликатов ----------
-    const btnBat = $('#btnDownloadBat');
-    if (btnBat) {
-        btnBat.addEventListener('click', () => {
-            const doomed = fileData.filter(isDupInDownloads);
-            if (!doomed.length) {
-                alert('Точных копий для удаления не найдено.');
-                return;
-            }
+    cleanApplyBtn.addEventListener('click', async () => {
+        if (!cleanPending || cleanBusy) return;
+        const request = cleanPending;
+        setCleanBusy(true, 'Переношу файлы в карантин…');
+        const { body, error } = await cleanCall('/api/clean/apply', request);
+        setCleanBusy(false);
+        if (error) { closeCleanDialog(); toast(error, true); return; }
 
-            let bat = '@echo off\r\nchcp 65001 > nul\r\necho Удаление точных дубликатов из Downloads...\r\n';
-            doomed.forEach(f => {
-                bat += 'del /f /q "' + f.p + '"\r\n';
-            });
-            bat += 'echo Очистка завершена!\r\npause\r\n';
+        cleanPending = null;
+        removeFilesFromPage(body.moved.map(m => m.path));
+        const rows = body.moved.map(m => cleanRow(true, m.path, 'перенесён'))
+            .concat(body.failed.map(f => cleanRow(false, f.path, f.problem)))
+            .concat(body.skipped.map(f => cleanRow(false, f.path, f.problem)));
+        const notMoved = body.failed.length + body.skipped.length;
+        showCleanDialog(
+            'Перенесено: ' + body.moved.length + ' (' + fmtSize(body.moved_size) + ').'
+                + (notMoved ? ' Не перенесено: ' + notMoved + '.' : '')
+                + ' Перезапустите сканирование, чтобы обновить отчёт.',
+            rows,
+            body.run_dir ? 'Папка: ' + body.run_dir + '. Журнал: ' + body.log : '',
+            false,
+            'Закрыть'
+        );
+    });
 
-            const blob = new Blob([bat], { type: 'application/x-bat' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'delete_exact_duplicates.bat';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        });
-    }
+    cleanCloseBtn.addEventListener('click', () => { if (!cleanBusy) closeCleanDialog(); });
+    // Esc во время проверки или переноса окно не закрывает.
+    cleanDialog.addEventListener('cancel', (e) => { if (cleanBusy) e.preventDefault(); else cleanPending = null; });
 
-    // ---------- 7. Экспорт selection.json (для python nexus_links.py clean) ----------
-    const btnJson = $('#btnExportJson');
-    if (btnJson) {
-        btnJson.addEventListener('click', () => {
-            const doomed = fileData.filter(f => f.s === 'downloads' && (f.vd === 'exact_dup' || f.vd === 'older'));
-            const exportData = {
-                created: new Date().toISOString(),
-                files: doomed.map(f => ({
-                    path: f.p,
-                    size: f.z,
-                    mtime: f.m,
-                    sha256: f.h,
-                    reason: f.vd,
-                    keeper: f.k
-                }))
-            };
+    // ---------- 6. Экспорт selection.json (для python nexus_links.py clean) ----------
+    $('#btnExportJson').addEventListener('click', () => {
+        const chosen = selectedFiles();
+        if (!chosen.length) { toast('Ничего не выбрано.'); return; }
+        const exportData = buildSelection(chosen, new Date().toISOString());
 
-            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'selection.json';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        });
-    }
+        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'selection.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    });
 
-    // ---------- 8. Изменение ширины колонок мышкой (как в Проводнике) ----------
+    // ---------- 7. Изменение ширины колонок мышкой (как в Проводнике) ----------
     $$('#modsTable th').forEach(th => {
         const resizer = th.querySelector('.col-resizer');
         if (!resizer) return;
@@ -996,7 +1222,7 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     const tk=document.getElementById('ticker');
     try{
         const f=fileData,dups=f.filter(x=>x.s==='downloads'&&x.vd==='exact_dup'),sz=a=>fmtSize(a.reduce((t,x)=>t+(Number(x.z)||0),0));
-        const t=['▌ ИНДЕКС: '+f.length+' ФАЙЛОВ','DOWNLOADS C: '+sz(f.filter(x=>x.s==='downloads')),'VORTEX D: '+sz(f.filter(x=>x.s!=='downloads')),'ICE: '+dups.length+' ТОЧНЫХ КОПИЙ // '+sz(dups)+' К ОЧИСТКЕ','NEURAL LINK STABLE','NO DATA LEAKS DETECTED'].join('   ///   ');
+        const t=['▌ ИНДЕКС: '+f.length+' ФАЙЛОВ',downloadsLabel.toUpperCase()+' — '+sz(f.filter(x=>x.s==='downloads')),vortexLabel.toUpperCase()+' — '+sz(f.filter(x=>x.s!=='downloads')),'ICE: '+dups.length+' ТОЧНЫХ КОПИЙ // '+sz(dups)+' К ОЧИСТКЕ','NEURAL LINK STABLE','NO DATA LEAKS DETECTED'].join('   ///   ');
         if(tk)tk.textContent=t+'   ///   '+t;
     }catch(e){}
 

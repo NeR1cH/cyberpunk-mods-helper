@@ -9,16 +9,27 @@ echo  Cyberpunk 2077 Mod Auditor
 echo ======================================================
 echo.
 
-:: 1. Проверка Python
+:: 1. Проверка Python: сначала python, затем лаунчер py -3; нужна версия 3.10 или новее
+set "PY=python"
 python --version > nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo [!] Ошибка: Python не обнаружен в PATH.
+if errorlevel 1 set "PY=py -3"
+%PY% --version > nul 2>&1
+if errorlevel 1 (
+    echo [!] Ошибка: Python не обнаружен ^(ни python, ни py -3^).
     echo     Установите Python 3.10+ с галочкой "Add python.exe to PATH".
     echo.
     pause
     exit /b 1
 )
-echo [+] Python обнаружен.
+%PY% -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+if errorlevel 1 (
+    echo [!] Ошибка: нужен Python 3.10 или новее, а найден:
+    %PY% --version
+    echo.
+    pause
+    exit /b 1
+)
+echo [+] Python обнаружен: %PY%
 
 :: 2. Создание config.json из примера
 set "CONFIG_CREATED=0"
@@ -68,20 +79,12 @@ if "%CONFIG_CREATED%"=="1" (
 echo.
 echo ======================================================
 echo  Сканирование архивов и создание дашборда...
-echo  Автоматическая обработка партиями, пока хватает дневного лимита.
-echo  Внутренний лимит приложения: 10 попыток за UTC-сутки (не квота OpenRouter).
+echo  ИИ обрабатывает партии в одном запуске, пока хватает дневного лимита.
+echo  Внутренний лимит приложения: ai.daily_budget в config.json, по умолчанию 10 попыток за UTC-сутки (не квота OpenRouter).
 echo ======================================================
 echo.
 
-:scan_loop
-set "AI_REQUESTS_BEFORE="
-set "NEXUS_PAGES_BEFORE="
-for /f "tokens=1,2 delims=|" %%R in ('python openrouter_limits.py progress') do (
-    set "AI_REQUESTS_BEFORE=%%R"
-    set "NEXUS_PAGES_BEFORE=%%S"
-)
-
-python nexus_links.py scan --no-open --ai-auto --ai-max-requests 1 --nexus-analyze --nexus-ai-max-mods 2 --nexus-max-requests 20
+%PY% nexus_links.py scan --no-open --ai-auto --ai-until-budget --ai-max-requests 1 --nexus-analyze --nexus-ai-max-mods 2 --nexus-max-requests 20
 if errorlevel 1 (
     echo.
     echo [!] Сканирование не удалось.
@@ -91,31 +94,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
-set "AI_REQUESTS_AFTER="
-set "NEXUS_PAGES_AFTER="
-for /f "tokens=1,2 delims=|" %%R in ('python openrouter_limits.py progress') do (
-    set "AI_REQUESTS_AFTER=%%R"
-    set "NEXUS_PAGES_AFTER=%%S"
-)
-if not defined AI_REQUESTS_BEFORE goto scan_complete
-if not defined AI_REQUESTS_AFTER goto scan_complete
-if not defined NEXUS_PAGES_BEFORE goto scan_complete
-if not defined NEXUS_PAGES_AFTER goto scan_complete
-if "%AI_REQUESTS_AFTER%"=="-1" goto scan_complete
-if "%AI_REQUESTS_BEFORE%"=="%AI_REQUESTS_AFTER%" if "%NEXUS_PAGES_BEFORE%"=="%NEXUS_PAGES_AFTER%" goto scan_complete
-if "%AI_REQUESTS_AFTER%"=="0" goto scan_complete
-echo.
-echo [*] Партия завершена. Осталось запросов OpenRouter на сегодня: %AI_REQUESTS_AFTER%.
-echo [*] Перехожу к следующей партии...
-echo.
-timeout /t 4 /nobreak > nul
-goto scan_loop
-
-:scan_complete
 echo.
 echo ======================================================
 echo  Запуск дашборда на http://localhost:8000
 echo  Для завершения нажмите Ctrl+C.
 echo ======================================================
 echo.
-python server.py
+%PY% server.py
