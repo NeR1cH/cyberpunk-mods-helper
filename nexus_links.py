@@ -33,7 +33,7 @@ import time
 import webbrowser
 import zipfile
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from typing import Iterable, Optional
@@ -2112,6 +2112,26 @@ def verify_entry(
     return None
 
 
+def iter_clean_checks(
+    entries: Iterable[object],
+    downloads: Path,
+    quarantine: Path,
+    verify_hash: bool = True,
+) -> Iterable[tuple[object, Optional[str]]]:
+    """Проверяет записи списка очистки по одной: (запись, причина пропуска или None)."""
+    for entry in entries:
+        yield entry, verify_entry(entry, downloads, quarantine, verify_hash=verify_hash)
+
+
+@dataclass
+class CleanOutcome:
+    """Что сделал _apply_clean_plan — чтобы дашборд показал результат, а не только код выхода."""
+    moved: list[tuple[str, str]] = field(default_factory=list)    # (откуда, куда); для Корзины «куда» пустое
+    failed: list[tuple[str, str]] = field(default_factory=list)   # (файл, текст ошибки)
+    run_dir: Optional[Path] = None
+    log_path: Optional[Path] = None
+
+
 def _load_clean_selection(path: Path) -> list[dict]:
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(data, dict) or not isinstance(data.get("files"), list):
@@ -2122,8 +2142,14 @@ def _load_clean_selection(path: Path) -> list[dict]:
     return entries
 
 
-def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str) -> int:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str,
+                      outcome: Optional[CleanOutcome] = None) -> int:
+    started = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp, attempt = started, 1
+    # Два запуска в одну секунду не должны делить папку и затирать журнал друг друга.
+    while (quarantine / stamp).exists() or (quarantine / f"clean_{stamp}.log").exists():
+        attempt += 1
+        stamp = f"{started}_{attempt}"
     run_dir = quarantine / stamp
     trash = None
     if mode == "trash":
@@ -2138,6 +2164,9 @@ def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str) -> int:
 
     log_path = (run_dir if mode != "trash" else quarantine) / f"clean_{stamp}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    if outcome is not None:
+        outcome.run_dir = None if trash else run_dir
+        outcome.log_path = log_path
     moved = 0
     with open(log_path, "w", encoding="utf-8") as lf:
         for entry in plan:
@@ -2146,6 +2175,7 @@ def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str) -> int:
                 if trash:
                     trash(str(src))
                     lf.write(f"TRASH\t{src}\n")
+                    dest_text = ""
                 else:
                     dest = run_dir / src.name
                     n = 1
@@ -2154,10 +2184,15 @@ def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str) -> int:
                         n += 1
                     shutil.move(str(src), str(dest))
                     lf.write(f"MOVE\t{src}\t{dest}\n")
+                    dest_text = str(dest)
                 moved += 1
+                if outcome is not None:
+                    outcome.moved.append((entry["path"], dest_text))
             except OSError as exc:
                 log.error("Не удалось обработать %s: %s", src, exc)
                 lf.write(f"FAIL\t{src}\t{exc}\n")
+                if outcome is not None:
+                    outcome.failed.append((entry["path"], str(exc)))
     where = "в Корзину" if trash else f"в {run_dir}"
     log.info("Готово: обработано %d из %d файлов (%s). Журнал: %s", moved, len(plan), where, log_path)
     return 0 if moved == len(plan) else 1
@@ -2176,8 +2211,8 @@ def cmd_clean(args: argparse.Namespace) -> int:
         return 2
 
     plan: list[dict] = []
-    for e in entries:
-        problem = verify_entry(e, s.downloads, s.quarantine, verify_hash=not args.no_verify)
+    for e, problem in iter_clean_checks(entries, s.downloads, s.quarantine,
+                                        verify_hash=not args.no_verify):
         if problem:
             log.warning("[ПРОПУСК] %s — %s", e.get("path"), problem)
         else:

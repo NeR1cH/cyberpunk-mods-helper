@@ -134,7 +134,7 @@
     .filter-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 
     /* Кнопки со скошенными углами */
-    .btn, .btn-delete, .btn-reveal {
+    .btn, .btn-clean, .btn-reveal {
         font-family: var(--font-ui);
         font-size: 12px;
         font-weight: 600;
@@ -152,13 +152,51 @@
     .btn:hover { background: rgba(0, 240, 255, 0.2); color: var(--text-bright); }
     .btn.active { background: var(--accent-yellow); color: #000; font-weight: 700; box-shadow: inset 2px 0 0 #000; }
     .btn:disabled, .btn:disabled:hover { background: rgba(0, 240, 255, 0.08); color: var(--text-main); opacity: .4; cursor: not-allowed; }
-    .btn-delete {
-        background: rgba(255, 0, 60, 0.16);
-        color: #ff4d73;
-        box-shadow: inset 2px 0 0 var(--accent-red);
+    .btn-clean {
+        background: rgba(252, 238, 10, 0.14);
+        color: var(--accent-yellow);
+        box-shadow: inset 2px 0 0 var(--accent-yellow);
     }
-    .btn-delete:hover:not(:disabled) { background: var(--accent-red); color: #fff; }
-    .btn-delete:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-clean:hover:not(:disabled) { background: var(--accent-yellow); color: #000; }
+    .btn-clean:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* Окно предпросмотра и результата переноса в карантин */
+    .clean-dialog {
+        width: min(760px, calc(100vw - 32px));
+        max-height: calc(100vh - 48px);
+        margin: auto;   /* общий сброс отступов убирает штатное центрирование <dialog> */
+        padding: 18px 20px;
+        background: #100d24;
+        color: var(--text-main);
+        border: 1px solid rgba(252, 238, 10, 0.45);
+        border-radius: 2px;
+    }
+    .clean-dialog::backdrop { background: rgba(4, 3, 12, 0.78); }
+    .clean-dialog h2 { margin: 0 0 10px; font-size: 16px; color: var(--accent-yellow); }
+    .clean-summary { margin: 0 0 10px; font-size: 13px; color: var(--text-bright); }
+    .clean-where { margin: 10px 0 14px; font-size: 11px; color: var(--text-dim); word-break: break-all; }
+    .clean-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        max-height: 46vh;
+        overflow: auto;
+        border: 1px solid var(--border-color);
+    }
+    .clean-list li {
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        padding: 6px 10px;
+        font-size: 12px;
+        border-bottom: 1px solid var(--border-color);
+    }
+    .clean-list li:last-child { border-bottom: 0; }
+    .clean-list .clean-mark { flex: 0 0 auto; font-weight: 700; }
+    .clean-list .clean-name { flex: 1 1 auto; word-break: break-all; color: var(--text-bright); }
+    .clean-list .clean-detail { flex: 0 0 auto; max-width: 48%; text-align: right; color: var(--text-dim); }
+    .clean-list li.clean-ok .clean-mark { color: var(--accent-green); }
+    .clean-list li.clean-skip .clean-mark, .clean-list li.clean-skip .clean-detail { color: #ff6b85; }
 
     /* Баннер очистки дубликатов */
     .dup-banner {
@@ -439,7 +477,7 @@ td{border-bottom-color:rgba(43,37,80,.8)}
 tbody tr:nth-child(even) td{background:rgba(255,255,255,.015)}
 tbody tr:hover td{background:rgba(0,240,255,.08)}
 .badge,.chip{font-family:var(--font-mono);letter-spacing:.04em;text-shadow:0 0 6px currentColor}
-.btn,.btn-delete{text-transform:uppercase;letter-spacing:.06em}
+.btn,.btn-clean{text-transform:uppercase;letter-spacing:.06em}
 .search-input{border-color:rgba(0,240,255,.5);caret-color:var(--accent-yellow)}.search-input::placeholder{color:#6f6a99}
 .toast{background:#17133a;z-index:70}
 /* загрузка */
@@ -509,9 +547,8 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
             <button type="button" class="btn" id="btnClearSelection">Снять выбор</button>
         </div>
         <div class="dup-actions">
-            <button type="button" class="btn-delete" id="btnDeleteDups" title="Удаляются только отмеченные точные копии. Старые версии очищаются через экспорт JSON и команду clean.">🗑 Удалить выбранные копии</button>
-            <button type="button" class="btn" id="btnDownloadBat" title="В скрипт попадают только отмеченные точные копии.">💾 Скачать BAT-скрипт очистки</button>
-            <button type="button" class="btn" id="btnExportJson">📥 Экспорт JSON для clean</button>
+            <button type="button" class="btn-clean" id="btnCleanSelected" title="Сначала откроется предпросмотр: файлы проверяются заново и ничего не меняется, пока вы не нажмёте «Применить».">🧹 Перенести выбранное в карантин</button>
+            <button type="button" class="btn" id="btnExportJson" title="Тот же список для команды python nexus_links.py clean">📥 Экспорт JSON для clean</button>
         </div>
     </div>
 
@@ -552,6 +589,17 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         </table>
     </div>
 
+    <dialog id="cleanDialog" class="clean-dialog" aria-labelledby="cleanTitle">
+        <h2 id="cleanTitle">Перенос в карантин</h2>
+        <p id="cleanSummary" class="clean-summary"></p>
+        <ul id="cleanList" class="clean-list"></ul>
+        <p id="cleanWhere" class="clean-where"></p>
+        <div class="dup-actions">
+            <button type="button" class="btn-clean" id="btnCleanApply" disabled>Применить</button>
+            <button type="button" class="btn" id="btnCleanClose">Отмена</button>
+        </div>
+    </dialog>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script id="modAuditData" type="application/json">
@@ -573,24 +621,63 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     const tbody = $('#modsTable tbody');
     const gameModsContainer = $('#gameModsContainer');
     const gameModsTbody = $('#gameModsTable tbody');
-    const isDupInDownloads = (f) => f.s === 'downloads' && f.vd === 'exact_dup';
     // Подписи источников с настоящими дисками приходят из Python (data-атрибуты).
     const downloadsLabel = $('#diskUsage').getAttribute('data-downloads-label') || 'Downloads';
     const vortexLabel = $('#diskUsage').getAttribute('data-vortex-label') || 'Vortex';
-    // Что чистить, решают отмеченные галочки (data-fid), а не вердикт файла.
-    const selectedIds = new Set();
-    const isCandidate = (f) => f.s === 'downloads' && (f.vd === 'exact_dup' || f.vd === 'older');
-    const selectedFiles = () => fileData.filter(f => isCandidate(f) && selectedIds.has(f.fid));
-    // Прямое удаление и BAT необратимы, поэтому выбор может их только сузить:
-    // старые версии туда не попадают, даже если отмечены.
-    const selectedDups = () => selectedFiles().filter(isDupInDownloads);
 
-    // ---------- Утилиты ----------
+    // <pure-logic>
+    // Чистые функции без DOM. Их исполняет tests/test_dashboard_js.py под Node.js,
+    // поэтому здесь нельзя обращаться к document, window и переменным страницы.
     function fmtSize(bytes) {
         if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' ГБ';
         if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' МБ';
         return Math.round(bytes / 1024) + ' КБ';
     }
+
+    function baseName(path) {
+        return String(path).split(/[\\/]/).pop();
+    }
+
+    const isCandidate = (f) => f.s === 'downloads' && (f.vd === 'exact_dup' || f.vd === 'older');
+
+    // Что чистить, решают отмеченные галочки (их data-fid), а не вердикт файла.
+    function pickSelected(files, selectedIds) {
+        return files.filter(f => isCandidate(f) && selectedIds.has(f.fid));
+    }
+
+    // Формат selection.json: его читают команда clean и /api/clean/*.
+    function buildSelection(files, created) {
+        return {
+            created,
+            files: files.map(f => ({
+                path: f.p,
+                size: f.z,
+                mtime: f.m,
+                sha256: f.h,
+                reason: f.vd,
+                keeper: f.k
+            }))
+        };
+    }
+
+    // Ответы сервера на /api/clean/* → текст для пользователя.
+    function cleanMessage(status) {
+        const messages = {
+            downloads_not_configured: 'В config.json не задана папка downloads, поэтому очистка из дашборда отключена. Укажите её и перезапустите start.bat.',
+            preview_required: 'Список изменился после предпросмотра. Откройте предпросмотр заново.',
+            clean_in_progress: 'Перенос уже выполняется. Дождитесь его завершения.',
+            clean_failed: 'Не удалось создать папку карантина или журнал. Подробности — в окне сервера.',
+            bad_request: 'Сервер не принял список файлов. Обновите страницу и повторите.',
+            forbidden_origin: 'Сервер отклонил запрос. Откройте дашборд по адресу http://localhost:8000, а не как файл или по другому адресу.',
+            not_found: 'Сервер устарел: обновите server.py вместе с остальными файлами проекта.',
+            gone: 'Сервер устарел: обновите server.py вместе с остальными файлами проекта.'
+        };
+        return messages[status] || 'Сервер вернул неожиданный ответ. Подробности — в окне сервера.';
+    }
+    // </pure-logic>
+
+    const selectedIds = new Set();
+    const selectedFiles = () => pickSelected(fileData, selectedIds);
 
     let toastTimer;
     function toast(text, isErr) {
@@ -661,13 +748,11 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
             if (box.checked) selectedIds.add(Number(box.getAttribute('data-fid')));
         });
         const chosen = selectedFiles();
-        const dupCount = selectedDups().length;
         const bytes = chosen.reduce((s, f) => s + (Number(f.z) || 0), 0);
         $('#selectionPill').textContent = 'Выбрано: ' + chosen.length + ' (' + fmtSize(bytes) + ')';
-        const delBtn = $('#btnDeleteDups');
-        delBtn.textContent = '🗑 Удалить выбранные копии (' + dupCount + ')';
-        delBtn.disabled = dupCount === 0;
-        $('#btnDownloadBat').disabled = dupCount === 0;
+        const cleanBtn = $('#btnCleanSelected');
+        cleanBtn.textContent = '🧹 Перенести выбранное в карантин (' + chosen.length + ')';
+        cleanBtn.disabled = chosen.length === 0;
         $('#btnExportJson').disabled = chosen.length === 0;
         $('#btnClearSelection').disabled = chosen.length === 0;
     }
@@ -902,28 +987,72 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         }
     });
 
-    // ---------- 5. Удаление дубликатов через сервер ----------
-    $('#btnDeleteDups').addEventListener('click', async () => {
-        const doomed = selectedDups();
-        if (!doomed.length) { toast('Не отмечено ни одной точной копии.'); return; }
-        const bytes = doomed.reduce((s, f) => s + (Number(f.z) || 0), 0);
-        if (!confirm('Удалить файлов из Downloads: ' + doomed.length + ' (' + fmtSize(bytes) + ')?\nДействие необратимо.')) return;
+    // ---------- 5. Перенос выбранного в карантин через сервер ----------
+    // Порядок всегда один: предпросмотр (ничего не меняет) → «Применить» → карантин.
+    const cleanDialog = $('#cleanDialog');
+    const cleanApplyBtn = $('#btnCleanApply');
+    const cleanCloseBtn = $('#btnCleanClose');
+    let cleanPending = null;    // { files, confirm } — то, что показал предпросмотр
+    let cleanBusy = false;
 
-        const gone = new Set();
-        let failed = 0;
-        for (const f of doomed) {
-            try {
-                const res = await postJson('/api/delete', { path: f.p });
-                if (res.ok || res.status === 404) gone.add(f.p); else failed++;
-            } catch (err) {
-                if (!gone.size && !failed) {
-                    toast('Сервер не запущен. Запустите server.py или скачайте BAT-скрипт.', true);
-                    return;
-                }
-                failed++;
-            }
+    function cleanRow(ok, path, detail) {
+        const li = document.createElement('li');
+        li.className = ok ? 'clean-ok' : 'clean-skip';
+        const mark = document.createElement('span');
+        mark.className = 'clean-mark';
+        mark.textContent = ok ? '✔' : '✖';
+        const name = document.createElement('span');
+        name.className = 'clean-name';
+        name.textContent = baseName(path) || '(без имени)';
+        name.title = path;
+        const info = document.createElement('span');
+        info.className = 'clean-detail';
+        info.textContent = detail;
+        li.append(mark, name, info);
+        return li;
+    }
+
+    function showCleanDialog(summary, rows, where, canApply, closeLabel) {
+        $('#cleanSummary').textContent = summary;
+        $('#cleanList').replaceChildren(...rows);
+        $('#cleanList').hidden = rows.length === 0;
+        $('#cleanWhere').textContent = where;
+        cleanApplyBtn.hidden = !canApply;
+        cleanApplyBtn.disabled = !canApply;
+        cleanCloseBtn.textContent = closeLabel;
+        cleanCloseBtn.disabled = false;
+        if (!cleanDialog.open) {
+            if (typeof cleanDialog.showModal === 'function') cleanDialog.showModal();
+            else cleanDialog.setAttribute('open', '');
         }
+    }
 
+    function closeCleanDialog() {
+        cleanPending = null;
+        if (typeof cleanDialog.close === 'function') cleanDialog.close();
+        else cleanDialog.removeAttribute('open');
+    }
+
+    function setCleanBusy(busy, summary) {
+        cleanBusy = busy;
+        cleanApplyBtn.disabled = busy || cleanApplyBtn.hidden;
+        cleanCloseBtn.disabled = busy;
+        if (summary) $('#cleanSummary').textContent = summary;
+    }
+
+    async function cleanCall(url, payload) {
+        let res;
+        try {
+            res = await postJson(url, payload);
+        } catch (err) {
+            return { error: 'Сервер не запущен. Запустите start.bat (или python server.py) либо используйте «Экспорт JSON для clean».' };
+        }
+        const body = await res.json().catch(() => ({}));
+        return res.ok ? { body } : { error: cleanMessage(body.status) };
+    }
+
+    function removeFilesFromPage(paths) {
+        const gone = new Set(paths);
         $$('.file-item').forEach(item => {
             const btn = $('[data-copy-path]', item);
             if (btn && gone.has(btn.getAttribute('data-copy-path'))) {
@@ -937,68 +1066,77 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         fileData = fileData.filter(f => !gone.has(f.p));
         updateDisk();
         updateSelection();
-        toast('Удалено файлов: ' + gone.size + (failed ? ', не удалось: ' + failed : '') + '.', failed > 0);
+    }
+
+    $('#btnCleanSelected').addEventListener('click', async () => {
+        const chosen = selectedFiles();
+        if (!chosen.length) { toast('Ничего не выбрано.'); return; }
+        const files = buildSelection(chosen, new Date().toISOString()).files;
+        showCleanDialog('', [], '', false, 'Отмена');
+        setCleanBusy(true, 'Проверяю файлы… У точных копий заново считается SHA-256, для больших архивов это занимает время.');
+        const { body, error } = await cleanCall('/api/clean/preview', { files });
+        setCleanBusy(false);
+        if (error) { closeCleanDialog(); toast(error, true); return; }
+
+        const rows = body.files.map(f => cleanRow(!f.problem, f.path, f.problem || fmtSize(Number(f.size) || 0)));
+        cleanPending = { files, confirm: body.confirm };
+        showCleanDialog(
+            'К переносу: ' + body.ok_count + ' (' + fmtSize(body.total_size) + '). Пропущено: ' + body.skipped_count
+                + '. Пока ничего не изменено.',
+            rows,
+            'Файлы будут перенесены в карантин: ' + body.quarantine + '. Оттуда их можно вернуть вручную.',
+            body.ok_count > 0,
+            'Отмена'
+        );
     });
 
-    // ---------- 6. Скачивание BAT-скрипта очистки точных дубликатов ----------
-    const btnBat = $('#btnDownloadBat');
-    if (btnBat) {
-        btnBat.addEventListener('click', () => {
-            const doomed = selectedDups();
-            if (!doomed.length) {
-                alert('Не отмечено ни одной точной копии.');
-                return;
-            }
+    cleanApplyBtn.addEventListener('click', async () => {
+        if (!cleanPending || cleanBusy) return;
+        const request = cleanPending;
+        setCleanBusy(true, 'Переношу файлы в карантин…');
+        const { body, error } = await cleanCall('/api/clean/apply', request);
+        setCleanBusy(false);
+        if (error) { closeCleanDialog(); toast(error, true); return; }
 
-            let bat = '@echo off\r\nchcp 65001 > nul\r\necho Удаление точных дубликатов из Downloads...\r\n';
-            doomed.forEach(f => {
-                bat += 'del /f /q "' + f.p + '"\r\n';
-            });
-            bat += 'echo Очистка завершена!\r\npause\r\n';
+        cleanPending = null;
+        removeFilesFromPage(body.moved.map(m => m.path));
+        const rows = body.moved.map(m => cleanRow(true, m.path, 'перенесён'))
+            .concat(body.failed.map(f => cleanRow(false, f.path, f.problem)))
+            .concat(body.skipped.map(f => cleanRow(false, f.path, f.problem)));
+        const notMoved = body.failed.length + body.skipped.length;
+        showCleanDialog(
+            'Перенесено: ' + body.moved.length + ' (' + fmtSize(body.moved_size) + ').'
+                + (notMoved ? ' Не перенесено: ' + notMoved + '.' : '')
+                + ' Перезапустите сканирование, чтобы обновить отчёт.',
+            rows,
+            body.run_dir ? 'Папка: ' + body.run_dir + '. Журнал: ' + body.log : '',
+            false,
+            'Закрыть'
+        );
+    });
 
-            const blob = new Blob([bat], { type: 'application/x-bat' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'delete_exact_duplicates.bat';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        });
-    }
+    cleanCloseBtn.addEventListener('click', () => { if (!cleanBusy) closeCleanDialog(); });
+    // Esc во время проверки или переноса окно не закрывает.
+    cleanDialog.addEventListener('cancel', (e) => { if (cleanBusy) e.preventDefault(); else cleanPending = null; });
 
-    // ---------- 7. Экспорт selection.json (для python nexus_links.py clean) ----------
-    const btnJson = $('#btnExportJson');
-    if (btnJson) {
-        btnJson.addEventListener('click', () => {
-            const doomed = selectedFiles();
-            if (!doomed.length) { toast('Ничего не выбрано.'); return; }
-            const exportData = {
-                created: new Date().toISOString(),
-                files: doomed.map(f => ({
-                    path: f.p,
-                    size: f.z,
-                    mtime: f.m,
-                    sha256: f.h,
-                    reason: f.vd,
-                    keeper: f.k
-                }))
-            };
+    // ---------- 6. Экспорт selection.json (для python nexus_links.py clean) ----------
+    $('#btnExportJson').addEventListener('click', () => {
+        const chosen = selectedFiles();
+        if (!chosen.length) { toast('Ничего не выбрано.'); return; }
+        const exportData = buildSelection(chosen, new Date().toISOString());
 
-            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'selection.json';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        });
-    }
+        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'selection.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    });
 
-    // ---------- 8. Изменение ширины колонок мышкой (как в Проводнике) ----------
+    // ---------- 7. Изменение ширины колонок мышкой (как в Проводнике) ----------
     $$('#modsTable th').forEach(th => {
         const resizer = th.querySelector('.col-resizer');
         if (!resizer) return;

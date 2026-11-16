@@ -69,16 +69,19 @@ class SelectionContractTests(unittest.TestCase):
     def test_cleanup_actions_take_files_from_the_checkbox_selection(self) -> None:
         page = _render_sample_dashboard()
 
-        # Три действия очистки: прямое удаление, BAT и экспорт selection.json.
-        sources = re.findall(r"const doomed = ([^;]+);", page)
+        # Счётчик, перенос в карантин и экспорт selection.json берут файлы из одного места.
+        sources = re.findall(r"const chosen = ([^;]+);", page)
 
-        self.assertEqual(sorted(sources), ["selectedDups()", "selectedDups()", "selectedFiles()"])
+        self.assertEqual(sources, ["selectedFiles()"] * 3)
+        self.assertEqual(page.count("buildSelection(chosen, "), 2)
         self.assertIn("selectedIds.has(f.fid)", page)
+        self.assertNotIn("fileData.filter(f => f.s ===", page)
 
     def test_selection_counter_and_bulk_buttons_are_rendered(self) -> None:
         page = _render_sample_dashboard()
 
-        for element_id in ("selectionPill", "btnSelectDups", "btnSelectOld", "btnClearSelection"):
+        for element_id in ("selectionPill", "btnSelectDups", "btnSelectOld", "btnClearSelection",
+                           "btnCleanSelected", "btnExportJson", "cleanDialog", "btnCleanApply"):
             with self.subTest(element_id=element_id):
                 self.assertEqual(page.count(f'id="{element_id}"'), 1)
 
