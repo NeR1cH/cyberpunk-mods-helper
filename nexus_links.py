@@ -73,6 +73,10 @@ from mod_recommendations import (
 
 log = logging.getLogger("modaudit")
 
+# Единственное место, где задана версия: её показывают --version и подвал дашборда.
+# Суффикс .dev0 — код между выпусками; при релизе меняется на номер версии (см. CHANGELOG.md).
+__version__ = "1.3.0.dev0"
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = SCRIPT_DIR / "dashboard_template.html"
 CONFIG_PATH = SCRIPT_DIR / "config.json"
@@ -1959,6 +1963,7 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
     custom_blacklist = load_custom_blacklist()
     values = {
         "GENERATED": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "VERSION": _esc(__version__),
         "STATS": stats,
         "CORE_CARDS": cards,
         "FILTER_BUTTONS": buttons,
@@ -2145,6 +2150,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     until_budget = (bool(getattr(args, "ai_until_budget", False)) and ai_requested
                     and bool(resolve_openrouter(s, args)[0]))
     round_no = 0
+    previous_state: Optional[tuple[int, int, int, int]] = None
     while True:
         round_no += 1
         ai_map = run_ai(base_rows, s, args, online=ai_online)
@@ -2154,7 +2160,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         if not until_budget:
             break
         state = _ai_round_state(ai_map, nexus_records)
-        if round_no > 1 and state == previous_state:
+        if state == previous_state:
             log.info("[*] ИИ: новой работы нет, раундов выполнено: %d", round_no)
             break
         previous_state = state
@@ -2412,6 +2418,8 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--quarantine", help=f"папка карантина (по умолчанию <downloads>\\{QUARANTINE_DIRNAME})")
 
     parser = argparse.ArgumentParser(description="Cyberpunk 2077 Mod Auditor")
+    parser.add_argument("--version", action="version",
+                        version=f"Cyberpunk 2077 Mod Auditor {__version__}")
     sub = parser.add_subparsers(dest="cmd")
 
     p_scan = sub.add_parser("scan", parents=[common], help="собрать дашборд (по умолчанию)")
@@ -2469,7 +2477,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or argv[0] not in ("scan", "clean", "ai-models", "-h", "--help"):
+    if not argv or argv[0] not in ("scan", "clean", "ai-models", "-h", "--help", "--version"):
         argv.insert(0, "scan")   # `python nexus_links.py --downloads X` = scan
     args = build_parser().parse_args(argv)
     return args.func(args)
