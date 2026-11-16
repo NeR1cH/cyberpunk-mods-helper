@@ -492,6 +492,79 @@ class GroupingTests(unittest.TestCase):
         self.assertEqual(plan[0].exclude, ())
         self.assertEqual(plan[1].exclude, ())
 
+    def test_custom_quarantine_inside_downloads_is_not_scanned(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            downloads = Path(temp_dir) / "Загрузки модов"
+            quarantine = downloads / "my_q"
+            run_dir = quarantine / "20261116_101500"
+            run_dir.mkdir(parents=True)
+            (downloads / "keep.zip").write_bytes(b"archive")
+            (run_dir / "moved.zip").write_bytes(b"archive")
+
+            archives, scanned_count = nexus_links._scan_archive_roots(downloads, None, quarantine)
+
+        self.assertEqual(scanned_count, 1)
+        self.assertEqual([item.path.name for item in archives], ["keep.zip"])
+
+    def test_scan_plan_excludes_quarantine_only_from_the_root_that_contains_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            downloads = root / "Downloads"
+            vortex = root / "Vortex"
+            inside = downloads / "my_q"
+            inside.mkdir(parents=True)
+            vortex.mkdir()
+
+            plan = build_scan_plan(downloads, vortex, inside)
+            outside_plan = build_scan_plan(downloads, vortex, root / "elsewhere")
+            # Тот же каталог, записанный иначе, должен распознаваться как карантин.
+            respelled_plan = build_scan_plan(downloads, None, downloads / "." / "my_q")
+
+        self.assertEqual(plan[0].exclude, (inside.resolve(),))
+        self.assertEqual(plan[1].exclude, ())
+        self.assertEqual([item.exclude for item in outside_plan], [(), ()])
+        self.assertEqual(respelled_plan[0].exclude, (inside.resolve(),))
+
+    def test_cmd_scan_does_not_report_quarantined_archives_as_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            downloads = root / "Downloads"
+            quarantine = downloads / "my_q"
+            run_dir = quarantine / "20261116_101500"
+            run_dir.mkdir(parents=True)
+            (downloads / "Some Mod-1234-1-0.zip").write_bytes(b"identical archive")
+            (run_dir / "Some Mod-1234-1-0 (1).zip").write_bytes(b"identical archive")
+            settings = nexus_links.Settings(
+                downloads=downloads,
+                vortex=None,
+                game=None,
+                out=root / "dashboard.html",
+                quarantine=quarantine,
+            )
+            args = Namespace(
+                ai=False,
+                ai_all=False,
+                ai_auto=False,
+                nexus_analyze=False,
+                nexus_details=False,
+                nexus_max_requests=0,
+                no_open=True,
+            )
+            with (
+                patch("nexus_links.load_settings", return_value=settings),
+                patch("nexus_links.load_blacklist", return_value={}),
+                patch("nexus_links.check_game_core", return_value={}),
+                patch("nexus_links.scan_game_mods", return_value=[]),
+                patch("nexus_links.run_ai", return_value={}),
+                patch("nexus_links.render_dashboard", return_value="Дашборд") as render,
+            ):
+                result = nexus_links.cmd_scan(args)
+
+        self.assertEqual(result, 0)
+        archives = render.call_args.args[2]
+        self.assertEqual([item.path.name for item in archives], ["Some Mod-1234-1-0.zip"])
+        self.assertEqual([item.verdict for item in archives], [nexus_links.KEEP])
+
     def test_steam_game_lookup_checks_libraries_from_vdf(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

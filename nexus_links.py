@@ -1883,11 +1883,12 @@ def load_settings(args: argparse.Namespace) -> Settings:
 def _scan_archive_roots(
     downloads: Optional[Path],
     vortex: Optional[Path],
+    quarantine: Optional[Path] = None,
 ) -> tuple[list[Archive], int]:
     archives: list[Archive] = []
     scanned_folders = 0
     scan_labels = {"downloads": "Downloads", "vortex": "Vortex"}
-    for root in build_scan_plan(downloads, vortex):
+    for root in build_scan_plan(downloads, vortex, quarantine):
         label = scan_labels[root.source]
         folder = root.folder
         if root.warning:
@@ -1955,7 +1956,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
                   "(пример — config.example.json).")
         return 2
 
-    archives, scanned_folders = _scan_archive_roots(s.downloads, s.vortex)
+    archives, scanned_folders = _scan_archive_roots(s.downloads, s.vortex, s.quarantine)
     if not scanned_folders:
         log.error("Не найдена ни одна папка для сканирования. Проверьте downloads/vortex в config.json.")
         return 2
