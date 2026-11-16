@@ -41,6 +41,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote, quote_plus
 
+from json_files import atomic_write_json, preserve_corrupt_json
 from mod_categories import build_scan_plan, source_categories, summarize_sources
 from openrouter_limits import (
     block_remaining_requests_this_run,
@@ -1147,6 +1148,8 @@ def load_ai_cache(path: Path = AI_CACHE_PATH) -> dict[str, dict]:
         return {}
     except (OSError, ValueError) as exc:
         log.warning("[AI] кэш не прочитан (%s): %s", path, exc)
+        if isinstance(exc, ValueError):
+            preserve_corrupt_json(path)
         return {}
     try:
         items = raw.get("items", {})
@@ -1155,13 +1158,13 @@ def load_ai_cache(path: Path = AI_CACHE_PATH) -> dict[str, dict]:
     except AttributeError:
         pass
     log.warning("[AI] кэш имеет неверный формат (%s); начинаю с пустого кэша", path)
+    preserve_corrupt_json(path)
     return {}
 
 
 def save_ai_cache(items: dict[str, dict], path: Path = AI_CACHE_PATH) -> None:
     try:
-        path.write_text(json.dumps({"version": 1, "items": items}, ensure_ascii=False, indent=1),
-                        encoding="utf-8")
+        atomic_write_json(path, {"version": 1, "items": items}, indent=1)
     except OSError as exc:
         log.warning("[AI] кэш не сохранён (%s): %s", path, exc)
     else:
