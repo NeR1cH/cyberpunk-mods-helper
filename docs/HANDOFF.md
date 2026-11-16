@@ -5,12 +5,12 @@
 ## Текущее состояние
 - База: `main` на `c56ce93` (код тот же, что в `21324f1` / `v1.2.0`, плюс загруженные документы).
 - Этап 1: сделаны S05, S04, S01, S03 — четыре коммита в ветке `ccr-612844ff-ulz29s`, PR #1 в `main` (мержит Никита).
-- S02 — ветка `fix/S02-safe-clean`, PR #2. S06 — ветка `fix/S06-server-hardening`, свой PR. Ветки задач идут цепочкой (каждая поверх предыдущей), мержить по порядку.
-- 136 тестов проходят (Python 3.13, Linux, Node.js 22). `compileall` и `git diff --check` чистые.
+- S02 — ветка `fix/S02-safe-clean`, PR #2. S06 — ветка `fix/S06-server-hardening`, PR #3. S09 — ветка `refactor/S09-single-source`, свой PR. Ветки задач идут цепочкой (каждая поверх предыдущей), мержить по порядку.
+- 151 тест проходит (Python 3.13, Linux, Node.js 22). `compileall` и `git diff --check` чистые.
 - `HANDOFF.md` и `ROADMAP.md` перенесены из `docs/images/` в `docs/`.
 
 ## Следующий шаг
-- Порядок, заданный Никитой: S09 → S08 → S07 → S10 → S11. После каждой задачи — отчёт, ветка и PR.
+- Порядок, заданный Никитой: S08 → S07 → S10 → S11. После каждой задачи — отчёт, ветка и PR.
 
 ## Решения
 - **S05.** Общий модуль `json_files.py`: `atomic_write_json` и `preserve_corrupt_json`. Через него идут все записи JSON, включая счётчик OpenRouter и `blacklist.json` в сервере. Как `.corrupt-<дата>.json` сохраняется не только неразбираемый JSON, но и кэш с непригодной структурой или чужой `version`. Ошибка чтения (`OSError`) повреждением не считается.
@@ -23,6 +23,7 @@
 - **S02, тесты JS.** Чистые функции дашборда лежат в блоке `<pure-logic>` шаблона; `tests/test_dashboard_js.py` исполняет его под Node.js и пропускается без него. Работу с DOM по-прежнему проверяет только браузерный скрипт вне репозитория.
 - **S06.** Порядок проверок POST: `Host` → `Origin` либо `Sec-Fetch-Site: same-origin` → `Content-Type: application/json` (415) → токен `X-ModAudit-Token` (403 `bad_token`) → размер тела ≤ 1 МБ (413). `Host` проверяется и для GET. Токен создаётся на запуск и вписывается в `<meta name="api-token">` при отдаче страницы; файл отчёта на диске не меняется, страница отдаётся с `Cache-Control: no-store`. `OPTIONS` → 405. `/api/reveal` работает только внутри downloads, vortex, game и карантина; файл открывается через `explorer /select,"путь"`.
 - **S06, следствия.** Отчёты, созданные до S06, токен не шлют: кнопки в них получают `403 bad_token`, нужно пересканировать. Лимит 1 МБ ограничивает очистку из дашборда примерно 2 000 файлов за раз; больше — через экспорт JSON и CLI. `in_downloads` заменена на `inside_roots`.
+- **S09.** Потолок Mod ID: `DEFAULT_MAX_MOD_ID`, `configured_max_mod_id(cfg)` и `set_max_mod_id()` (единственное место записи глобальной `MAX_MOD_ID`; `load_settings` теперь всегда выставляет её из настроек, в том числе обратно в значение по умолчанию). `load_settings` бросает `ConfigError`, `cmd_scan`/`cmd_clean` и `server.main` превращают его в код выхода 2. Ключ и модели OpenRouter — `resolve_openrouter(settings, args)`. Сервер берёт встроенный чёрный список и потолок ID из ядра и читает `config.json` один раз через `load_settings` (своего `load_config` больше нет). Страница получает встроенные ID из блока `<script id="modAuditMeta">`.
 
 ## Ответы Никиты на вопросы раздела 8 (2026-11-16)
 - **1. Лицензия:** MIT, файл `LICENSE` добавить в S10.
@@ -36,7 +37,7 @@
 - Решения по S01 и S05 приняты.
 
 ## Замечено по пути (не исправлялось)
-- `test_game_mod_inventory_renders_in_separate_local_table` вызывает `render_dashboard` без подмены `load_custom_blacklist` и поэтому читает настоящий `blacklist.json`, если он есть. Исправить в S09 (согласовано).
+- Два теста в `tests/test_grouping.py` читали настоящий `blacklist.json` — исправлено в S09. Общей защиты от таких тестов нет: при новых вызовах `render_dashboard` и `load_blacklist` подменять `load_custom_blacklist`.
 - `.corrupt`-файлы кэшей не удаляются автоматически.
 - Карантин, подключённый внутрь Downloads как junction на другой диск, из скана не исключается (сравнение идёт по `realpath`).
 
@@ -46,3 +47,4 @@
 | 2026-11-16 | S05, S04, S01, S03 | Готово, 4 коммита, PR #1 в `main`; 87 → 111 тестов | На Windows и в Firefox/Edge не проверялось |
 | 2026-11-16 | S02 | Готово, ветка `fix/S02-safe-clean`, PR #2; 111 → 128 тестов | Перенос проверен в headless Chromium на временных папках; Windows не проверялась |
 | 2026-11-16 | S06 | Готово, ветка `fix/S06-server-hardening`, свой PR; 128 → 136 тестов | `explorer /select` на Windows не проверялся |
+| 2026-11-16 | S09 | Готово, ветка `refactor/S09-single-source`, свой PR; 136 → 151 тест | Поведение не менялось, кроме выхода с кодом 2 через `ConfigError` |

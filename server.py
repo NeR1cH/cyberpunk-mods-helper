@@ -24,23 +24,11 @@ PORT = 8000
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.json"
 BLACKLIST_PATH = ROOT / "blacklist.json"
-DEFAULT_MAX_MOD_ID = 35000
-BUILTIN_MOD_IDS = {786, 3560, 4088}
 MAX_CLEAN_ENTRIES = 5000
 MAX_BODY_BYTES = 1024 * 1024
 TOKEN_HEADER = "X-ModAudit-Token"
 # Шаблон дашборда содержит пустой meta; сервер вписывает в него токен при отдаче страницы.
 TOKEN_PLACEHOLDER = b'<meta name="api-token" content="">'
-
-
-def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    with path.open(encoding="utf-8-sig") as config_file:
-        config = json.load(config_file)
-    if not isinstance(config, dict):
-        raise ValueError(f"В {path} ожидается JSON-объект.")
-    return config
 
 
 def resolve_dashboard(
@@ -249,13 +237,7 @@ def make_handler(
         def handle_blacklist(self, payload: dict[str, Any]) -> None:
             action = payload.get("action")
             mod_id = payload.get("mod_id")
-            max_mod_id = settings.get("max_mod_id", DEFAULT_MAX_MOD_ID)
-            if (
-                not isinstance(max_mod_id, int)
-                or isinstance(max_mod_id, bool)
-                or max_mod_id < 1
-            ):
-                max_mod_id = DEFAULT_MAX_MOD_ID
+            max_mod_id = nexus_links.configured_max_mod_id(settings)
             if (
                 not isinstance(mod_id, int)
                 or isinstance(mod_id, bool)
@@ -273,7 +255,7 @@ def make_handler(
             ):
                 self.reply_json(400, "bad_reason")
                 return
-            if action == "remove" and mod_id in BUILTIN_MOD_IDS:
+            if action == "remove" and mod_id in nexus_links.OUTDATED_OR_DANGEROUS:
                 self.reply_json(403, "builtin_entry")
                 return
 
@@ -401,9 +383,13 @@ def make_handler(
 def main(arguments: list[str] | None = None) -> None:
     args = sys.argv[1:] if arguments is None else arguments
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    config = load_config()
+    try:
+        core = load_core_settings(args)
+    except nexus_links.ConfigError as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(2)
+    config = core.cfg or {}
     dashboard = resolve_dashboard(config, args)
-    core = load_core_settings(args)
     downloads = core.downloads
     handler = make_handler(
         downloads, dashboard, config=config, port=PORT, quarantine=core.quarantine,

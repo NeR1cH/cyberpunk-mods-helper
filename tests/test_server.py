@@ -121,13 +121,8 @@ class DashboardServerTests(unittest.TestCase):
         status, body = self.request("POST", path, payload, request_headers)
         return status, json.loads(body)
 
-    def test_config_loading_and_path_resolution(self) -> None:
-        config_path = self.root / "settings.json"
-        config_path.write_text(
-            json.dumps({"downloads": "configured-downloads", "out": "configured.html"}),
-            encoding="utf-8",
-        )
-        config = dashboard_server.load_config(config_path)
+    def test_dashboard_path_resolution(self) -> None:
+        config = {"downloads": "configured-downloads", "out": "configured.html"}
         dashboard = dashboard_server.resolve_dashboard(
             config,
             ["cli-downloads", "reports/cli.html"],
@@ -139,11 +134,24 @@ class DashboardServerTests(unittest.TestCase):
             dashboard_server.resolve_dashboard(config, [], root=self.root),
             self.root / "configured.html",
         )
-        self.assertEqual(dashboard_server.load_config(self.root / "missing.json"), {})
 
-        config_path.write_text("[]", encoding="utf-8")
-        with self.assertRaises(ValueError):
-            dashboard_server.load_config(config_path)
+    def test_server_reads_the_config_once_through_the_core(self) -> None:
+        config_path = self.root / "settings.json"
+        config_path.write_text(
+            json.dumps({"downloads": str(self.downloads), "max_mod_id": 40000, "out": "r.html"}),
+            encoding="utf-8",
+        )
+        self.addCleanup(nexus_links.set_max_mod_id)
+        with patch("nexus_links.find_cyberpunk_install", return_value=None):
+            settings = dashboard_server.load_core_settings([], config_path=config_path)
+
+            config_path.write_text("[]", encoding="utf-8")
+            with self.assertRaises(nexus_links.ConfigError):
+                dashboard_server.load_core_settings([], config_path=config_path)
+
+        self.assertEqual(settings.downloads, self.downloads)
+        self.assertEqual(settings.cfg["out"], "r.html")
+        self.assertFalse(hasattr(dashboard_server, "load_config"))
 
     def test_folder_check_uses_directory_boundaries(self) -> None:
         roots = [self.downloads, self.game]

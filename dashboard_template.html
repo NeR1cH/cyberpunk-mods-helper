@@ -606,8 +606,12 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
 <script id="modAuditData" type="application/json">
 @@FILE_DATA@@
 </script>
+<script id="modAuditMeta" type="application/json">
+@@PAGE_META@@
+</script>
 <script>
     let fileData = JSON.parse(document.getElementById('modAuditData').textContent);
+    const pageMeta = JSON.parse(document.getElementById('modAuditMeta').textContent);
     // data-fid в разметке — это позиция записи в исходном списке; запоминаем её,
     // чтобы связь с галочкой не терялась, когда из fileData убираются удалённые файлы.
     fileData.forEach((f, i) => { f.fid = i; });
@@ -954,7 +958,7 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
                     return;
                 }
                 if (removing) {
-                    const builtin = [786, 3560, 4088].includes(modId);
+                    const builtin = (pageMeta.builtin_blacklist || []).includes(modId);
                     if (builtin) {
                         blacklistBtn.textContent = 'Встроенный список';
                         blacklistBtn.disabled = true;

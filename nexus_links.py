@@ -173,7 +173,25 @@ PRERELEASE_RANK = {"alpha": -3, "beta": -2, "pre": -2, "rc": -1}
 # это File ID, дата или чужой номер (например, «Виртуальная мастерская-168466.zip»), и ссылка
 # вида /mods/168466 даст 404. Потолок растёт вместе с Nexus: при необходимости задайте
 # "max_mod_id" в config.json.
-MAX_MOD_ID = 35000
+DEFAULT_MAX_MOD_ID = 35000
+MAX_MOD_ID = DEFAULT_MAX_MOD_ID
+
+
+def configured_max_mod_id(cfg: object) -> int:
+    """Потолок Mod ID из настроек; при отсутствии или неверном значении — по умолчанию."""
+    value = cfg.get("max_mod_id") if isinstance(cfg, dict) else None
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value
+    return DEFAULT_MAX_MOD_ID
+
+
+def set_max_mod_id(value: Optional[int] = None) -> None:
+    """Задать потолок Mod ID для процесса; без аргумента — вернуть значение по умолчанию.
+
+    Единственное место, где меняется глобальная MAX_MOD_ID (уйдёт в контекст в R01).
+    """
+    global MAX_MOD_ID
+    MAX_MOD_ID = DEFAULT_MAX_MOD_ID if value is None else value
 
 
 def is_valid_mod_id(n: Optional[int]) -> bool:
@@ -864,8 +882,7 @@ def build_rows(archives: list[Archive], blacklist: dict[int, str],
             ModRow(mod_id, title, files, danger, status, actions, categories, grouping_reason)
         )
 
-    status_order = {"danger": 0, "dup": 1, "old": 2, "update": 3, "both": 4, "vortex": 5, "local": 6}
-    rows.sort(key=lambda r: (status_order[r.status], r.title.lower()))
+    rows.sort(key=lambda r: (STATUS_ORDER[r.status], r.title.lower()))
     return rows
 
 
@@ -1282,6 +1299,33 @@ def _run_ai_batches(
         log.info("    получено и сохранено: %d из %d", got, len(batch))
 
 
+def _ai_config(settings: "Settings") -> dict:
+    cfg = settings.cfg or {}
+    ai_cfg = cfg.get("ai") if isinstance(cfg, dict) else None
+    return ai_cfg if isinstance(ai_cfg, dict) else {}
+
+
+def resolve_openrouter(settings: "Settings", args: argparse.Namespace) -> tuple[str, list[str]]:
+    """Ключ и модели OpenRouter для обоих ИИ-режимов.
+
+    Ключ: переменная среды OPENROUTER_API_KEY важнее config.json; заглушка из
+    примера («YOUR_…») считается отсутствующим ключом. Модели: --ai-model,
+    затем ai.models из config.json, затем DEFAULT_AI_MODELS.
+    """
+    ai_cfg = _ai_config(settings)
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    key = key or str(ai_cfg.get("api_key") or "").strip()
+    if key.upper().startswith(("YOUR_", "YOUR-")):
+        key = ""
+
+    configured_models = ai_cfg.get("models")
+    if not isinstance(configured_models, list) or not configured_models:
+        configured_models = DEFAULT_AI_MODELS
+    ai_model = getattr(args, "ai_model", None)
+    models_value = [ai_model] if ai_model else configured_models
+    return key, [str(model) for model in models_value if str(model).strip()]
+
+
 def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
            online: bool) -> dict[str, AIInfo]:
     """Возвращает {norm_title: AIInfo}. Без online — только то, что уже лежит в кэше."""
@@ -1291,11 +1335,9 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
         return result
 
     try:
-        cfg = settings.cfg or {}
-        ai_cfg = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
-        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-        key = key or str(ai_cfg.get("api_key") or "").strip()
-        if not key or key.upper().startswith(("YOUR_", "YOUR-")):
+        ai_cfg = _ai_config(settings)
+        key, models = resolve_openrouter(settings, args)
+        if not key:
             if args.ai_auto and not args.ai and not args.ai_all:
                 log.info("[AI] ключ OpenRouter не введён; запускаю сканирование без ИИ.")
             else:
@@ -1303,11 +1345,6 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
                             "или \"ai\": {\"api_key\": \"...\"} в config.json. Показываю только кэш.")
             return result
 
-        configured_models = ai_cfg.get("models")
-        if not isinstance(configured_models, list) or not configured_models:
-            configured_models = DEFAULT_AI_MODELS
-        models_value = [args.ai_model] if args.ai_model else configured_models
-        models = [str(model) for model in models_value if str(model).strip()]
         if not models:
             log.error("[AI] Список моделей OpenRouter пуст.")
             return result
@@ -1405,11 +1442,8 @@ def run_nexus_ai_analysis(
 ) -> dict[int, NexusModRecord]:
     mod_ids = {r.mod_id for r in rows if is_valid_mod_id(r.mod_id)}
     cache_path = SCRIPT_DIR / "nexus_analysis_cache.json"
-    cfg = settings.cfg or {}
-    ai_cfg = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
-    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    key = key or str(ai_cfg.get("api_key") or "").strip()
-    if not key or key.upper().startswith(("YOUR_", "YOUR-")):
+    key, models = resolve_openrouter(settings, args)
+    if not key:
         log.warning("[Nexus AI] Нет ключа OpenRouter; использую только сохранённый анализ.")
         return fetch_nexus_mod_records(mod_ids, cache_path, 0)
 
@@ -1435,11 +1469,6 @@ def run_nexus_ai_analysis(
         log.info("[Nexus AI] Все доступные страницы уже проанализированы или недоступны.")
         return records
 
-    configured_models = ai_cfg.get("models")
-    if not isinstance(configured_models, list) or not configured_models:
-        configured_models = DEFAULT_AI_MODELS
-    models_value = [args.ai_model] if args.ai_model else configured_models
-    models = [str(model) for model in models_value if str(model).strip()]
     if not models:
         log.error("[Nexus AI] Список моделей OpenRouter пуст.")
         return records
@@ -1864,6 +1893,8 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
             for r in rows
         ),
         "FILE_DATA": file_json,
+        # Встроенные ID чёрного списка: страница берёт их отсюда, а не из своей копии.
+        "PAGE_META": json.dumps({"builtin_blacklist": sorted(OUTDATED_OR_DANGEROUS)}),
     }
     return re.sub(r"@@([A-Z_]+)@@", lambda m: values[m.group(1)], template)
 
@@ -1886,24 +1917,23 @@ def _as_path(value: object) -> Optional[Path]:
     return Path(os.path.expandvars(os.path.expanduser(str(value))))
 
 
+class ConfigError(Exception):
+    """Файл настроек не читается или имеет неверный формат."""
+
+
 def load_settings(args: argparse.Namespace) -> Settings:
-    global MAX_MOD_ID
     cfg: dict = {}
     cfg_path = _as_path(getattr(args, "config", None)) or CONFIG_PATH
     if cfg_path.is_file():
         try:
             loaded_cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError) as exc:
-            log.error("Не удалось прочитать %s: %s", cfg_path, exc)
-            sys.exit(2)
+            raise ConfigError(f"Не удалось прочитать {cfg_path}: {exc}") from exc
         if not isinstance(loaded_cfg, dict):
-            log.error("В %s ожидается JSON-объект с настройками.", cfg_path)
-            sys.exit(2)
+            raise ConfigError(f"В {cfg_path} ожидается JSON-объект с настройками.")
         cfg = loaded_cfg
 
-    custom_max = cfg.get("max_mod_id")
-    if isinstance(custom_max, int) and not isinstance(custom_max, bool) and custom_max >= 1:
-        MAX_MOD_ID = custom_max
+    set_max_mod_id(configured_max_mod_id(cfg))
 
     downloads = _as_path(getattr(args, "downloads", None) or cfg.get("downloads"))
     vortex = _as_path(getattr(args, "vortex", None) or cfg.get("vortex"))
@@ -1988,7 +2018,11 @@ def _load_scan_nexus_data(
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    s = load_settings(args)
+    try:
+        s = load_settings(args)
+    except ConfigError as exc:
+        log.error("%s", exc)
+        return 2
     if not (s.downloads or s.vortex):
         log.error("Не заданы папки. Укажите --downloads/--vortex или заполните config.json "
                   "(пример — config.example.json).")
@@ -2199,7 +2233,11 @@ def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str,
 
 
 def cmd_clean(args: argparse.Namespace) -> int:
-    s = load_settings(args)
+    try:
+        s = load_settings(args)
+    except ConfigError as exc:
+        log.error("%s", exc)
+        return 2
     if s.downloads is None:
         log.error("Для очистки нужна папка Downloads (--downloads или config.json): "
                   "файлы вне её трогать нельзя.")

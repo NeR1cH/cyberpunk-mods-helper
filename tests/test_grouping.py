@@ -248,7 +248,8 @@ class GroupingTests(unittest.TestCase):
         ]
         rows = nexus_links.build_rows(files, {})
 
-        html = nexus_links.render_dashboard({}, rows, files)
+        with patch("nexus_links.load_custom_blacklist", return_value={}):
+            html = nexus_links.render_dashboard({}, rows, files)
 
         self.assertIn("Групп модов: <strong>3</strong>", html)
         self.assertIn("архивов: <strong>4</strong>", html)
@@ -307,7 +308,9 @@ class GroupingTests(unittest.TestCase):
             mod.mkdir(parents=True)
             (mod / "info.json").write_text("{}", encoding="utf-8")
             entries = nexus_links.scan_game_mods(game)
-            html = nexus_links.render_dashboard({}, [], [], game_mods=entries, game_path=game)
+            with patch("nexus_links.load_custom_blacklist", return_value={}):
+                html = nexus_links.render_dashboard(
+                    {}, [], [], game_mods=entries, game_path=game)
 
         self.assertIn(">Локальные в игре (1)</button>", html)
         self.assertIn('id="gameModsContainer" hidden', html)
