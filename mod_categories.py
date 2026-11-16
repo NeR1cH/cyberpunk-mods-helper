@@ -1,6 +1,6 @@
 """Source-based dashboard categories and archive/group summaries."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 from pathlib import Path
 from typing import Iterable, Literal, Protocol
@@ -34,6 +34,24 @@ class ScanRoot:
 
 
 def build_scan_plan(
+    downloads: Path | None,
+    vortex: Path | None,
+    quarantine: Path | None = None,
+) -> list[ScanRoot]:
+    """Plan source roots; the app's own quarantine folder is never scanned as a source."""
+    plan = _build_source_plan(downloads, vortex)
+    quarantine_root = _resolve_root(quarantine)
+    if quarantine_root is None:
+        return plan
+    quarantine_key = _path_key(quarantine_root)
+    return [
+        replace(root, exclude=root.exclude + (quarantine_root,))
+        if _is_inside(quarantine_key, _path_key(root.folder)) else root
+        for root in plan
+    ]
+
+
+def _build_source_plan(
     downloads: Path | None,
     vortex: Path | None,
 ) -> list[ScanRoot]:
