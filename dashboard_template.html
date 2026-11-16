@@ -151,6 +151,7 @@
     }
     .btn:hover { background: rgba(0, 240, 255, 0.2); color: var(--text-bright); }
     .btn.active { background: var(--accent-yellow); color: #000; font-weight: 700; box-shadow: inset 2px 0 0 #000; }
+    .btn:disabled, .btn:disabled:hover { background: rgba(0, 240, 255, 0.08); color: var(--text-main); opacity: .4; cursor: not-allowed; }
     .btn-delete {
         background: rgba(255, 0, 60, 0.16);
         color: #ff4d73;
@@ -181,6 +182,14 @@
         font-weight: 700;
         padding: 6px 16px;
         clip-path: var(--chamfer);
+    }
+    .selection-pill {
+        border: 1px solid var(--accent-yellow);
+        color: var(--accent-yellow);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        font-weight: 700;
+        padding: 5px 16px;
     }
     .dup-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
@@ -493,9 +502,15 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
             ⚡ <strong>Вкладка дубликатов.</strong> Найденные точные копии уже присутствуют в Vortex (диск D:). Их можно безопасно удалить из Downloads (диск C:).
         </div>
         <div class="savings-pill" id="savingsPill">Очистка дубликатов освободит: 0.0 ГБ на диске C:</div>
+        <div class="selection-pill" id="selectionPill" role="status" aria-live="polite">Выбрано: 0</div>
         <div class="dup-actions">
-            <button type="button" class="btn-delete" id="btnDeleteDups">🗑 Удалить дубликаты с диска</button>
-            <button type="button" class="btn" id="btnDownloadBat">💾 Скачать BAT-скрипт очистки</button>
+            <button type="button" class="btn" id="btnSelectDups">Выбрать все копии</button>
+            <button type="button" class="btn" id="btnSelectOld">Выбрать все старые</button>
+            <button type="button" class="btn" id="btnClearSelection">Снять выбор</button>
+        </div>
+        <div class="dup-actions">
+            <button type="button" class="btn-delete" id="btnDeleteDups" title="Удаляются только отмеченные точные копии. Старые версии очищаются через экспорт JSON и команду clean.">🗑 Удалить выбранные копии</button>
+            <button type="button" class="btn" id="btnDownloadBat" title="В скрипт попадают только отмеченные точные копии.">💾 Скачать BAT-скрипт очистки</button>
             <button type="button" class="btn" id="btnExportJson">📥 Экспорт JSON для clean</button>
         </div>
     </div>
@@ -544,6 +559,9 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
 </script>
 <script>
     let fileData = JSON.parse(document.getElementById('modAuditData').textContent);
+    // data-fid в разметке — это позиция записи в исходном списке; запоминаем её,
+    // чтобы связь с галочкой не терялась, когда из fileData убираются удалённые файлы.
+    fileData.forEach((f, i) => { f.fid = i; });
     let currentFilter = 'all';
 
     const $ = (sel, root = document) => root.querySelector(sel);
@@ -556,6 +574,13 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     const gameModsContainer = $('#gameModsContainer');
     const gameModsTbody = $('#gameModsTable tbody');
     const isDupInDownloads = (f) => f.s === 'downloads' && f.vd === 'exact_dup';
+    // Что чистить, решают отмеченные галочки (data-fid), а не вердикт файла.
+    const selectedIds = new Set();
+    const isCandidate = (f) => f.s === 'downloads' && (f.vd === 'exact_dup' || f.vd === 'older');
+    const selectedFiles = () => fileData.filter(f => isCandidate(f) && selectedIds.has(f.fid));
+    // Прямое удаление и BAT необратимы, поэтому выбор может их только сузить:
+    // старые версии туда не попадают, даже если отмечены.
+    const selectedDups = () => selectedFiles().filter(isDupInDownloads);
 
     // ---------- Утилиты ----------
     function fmtSize(bytes) {
@@ -603,12 +628,12 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
 
     // ---------- 1. Виджет занятого места ----------
     function updateDisk() {
-        let c = 0, d = 0, dup = 0, dupCount = 0;
+        let c = 0, d = 0, dup = 0;
         fileData.forEach(f => {
             const z = Number(f.z) || 0;
             if (f.s === 'downloads') {
                 c += z;
-                if (f.vd === 'exact_dup') { dup += z; dupCount++; }
+                if (f.vd === 'exact_dup') dup += z;
             } else {
                 d += z;
             }
@@ -621,11 +646,47 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         $('#segDup').style.width = (dup / total * 100) + '%';
         $('#segVx').style.width = (d / total * 100) + '%';
         $('#savingsPill').textContent = 'Очистка дубликатов освободит: ' + fmtSize(dup) + ' на диске C:';
-        const delBtn = $('#btnDeleteDups');
-        delBtn.textContent = '🗑 Удалить дубликаты (' + dupCount + ')';
-        delBtn.disabled = dupCount === 0;
     }
     requestAnimationFrame(() => requestAnimationFrame(updateDisk));
+
+    // ---------- 1a. Выбор файлов для очистки ----------
+    const selectionBoxes = () => $$('#modsTable input.sel');
+
+    function updateSelection() {
+        selectedIds.clear();
+        selectionBoxes().forEach(box => {
+            if (box.checked) selectedIds.add(Number(box.getAttribute('data-fid')));
+        });
+        const chosen = selectedFiles();
+        const dupCount = selectedDups().length;
+        const bytes = chosen.reduce((s, f) => s + (Number(f.z) || 0), 0);
+        $('#selectionPill').textContent = 'Выбрано: ' + chosen.length + ' (' + fmtSize(bytes) + ')';
+        const delBtn = $('#btnDeleteDups');
+        delBtn.textContent = '🗑 Удалить выбранные копии (' + dupCount + ')';
+        delBtn.disabled = dupCount === 0;
+        $('#btnDownloadBat').disabled = dupCount === 0;
+        $('#btnExportJson').disabled = chosen.length === 0;
+        $('#btnClearSelection').disabled = chosen.length === 0;
+    }
+
+    function setSelection(matches, checked) {
+        const byFid = new Map(fileData.map(f => [f.fid, f]));
+        selectionBoxes().forEach(box => {
+            const f = byFid.get(Number(box.getAttribute('data-fid')));
+            if (f && matches(f)) box.checked = checked;
+        });
+        updateSelection();
+    }
+
+    tbody.addEventListener('change', (e) => {
+        if (e.target.matches('input.sel')) updateSelection();
+    });
+    $('#btnSelectDups').addEventListener('click', () => setSelection(f => f.vd === 'exact_dup', true));
+    $('#btnSelectOld').addEventListener('click', () => setSelection(f => f.vd === 'older', true));
+    $('#btnClearSelection').addEventListener('click', () => setSelection(() => true, false));
+    // pageshow: браузер может восстановить состояние галочек при возврате на страницу.
+    window.addEventListener('pageshow', updateSelection);
+    updateSelection();
 
     // ---------- 2. Фильтры ----------
     if (filterButtons.length) filterButtons[0].classList.add('active');
@@ -635,7 +696,7 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
             filterButtons.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             currentFilter = btn.getAttribute('data-filter');
-            dupBanner.style.display = (currentFilter === 'dup') ? 'flex' : 'none';
+            dupBanner.style.display = (currentFilter === 'dup' || currentFilter === 'old') ? 'flex' : 'none';
             applyFilters();
         });
     });
@@ -840,8 +901,8 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
 
     // ---------- 5. Удаление дубликатов через сервер ----------
     $('#btnDeleteDups').addEventListener('click', async () => {
-        const doomed = fileData.filter(isDupInDownloads);
-        if (!doomed.length) { toast('Точных копий для удаления нет.'); return; }
+        const doomed = selectedDups();
+        if (!doomed.length) { toast('Не отмечено ни одной точной копии.'); return; }
         const bytes = doomed.reduce((s, f) => s + (Number(f.z) || 0), 0);
         if (!confirm('Удалить файлов из Downloads: ' + doomed.length + ' (' + fmtSize(bytes) + ')?\nДействие необратимо.')) return;
 
@@ -872,6 +933,7 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         });
         fileData = fileData.filter(f => !gone.has(f.p));
         updateDisk();
+        updateSelection();
         toast('Удалено файлов: ' + gone.size + (failed ? ', не удалось: ' + failed : '') + '.', failed > 0);
     });
 
@@ -879,9 +941,9 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     const btnBat = $('#btnDownloadBat');
     if (btnBat) {
         btnBat.addEventListener('click', () => {
-            const doomed = fileData.filter(isDupInDownloads);
+            const doomed = selectedDups();
             if (!doomed.length) {
-                alert('Точных копий для удаления не найдено.');
+                alert('Не отмечено ни одной точной копии.');
                 return;
             }
 
@@ -907,7 +969,8 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     const btnJson = $('#btnExportJson');
     if (btnJson) {
         btnJson.addEventListener('click', () => {
-            const doomed = fileData.filter(f => f.s === 'downloads' && (f.vd === 'exact_dup' || f.vd === 'older'));
+            const doomed = selectedFiles();
+            if (!doomed.length) { toast('Ничего не выбрано.'); return; }
             const exportData = {
                 created: new Date().toISOString(),
                 files: doomed.map(f => ({
