@@ -14,6 +14,8 @@ import time
 import urllib.error
 import urllib.request
 
+from json_files import atomic_write_json, preserve_corrupt_json
+
 log = logging.getLogger("modaudit")
 
 NEXUS_API_URL = "https://api.nexusmods.com/v3/games/cyberpunk2077/mods/{mod_id}"
@@ -171,14 +173,18 @@ def _load_cache(path: Path) -> dict[int, InstallationNote]:
         return {}
     except (OSError, ValueError) as exc:
         log.warning("[Nexus] Кэш подсказок не прочитан (%s): %s", path, exc)
+        if isinstance(exc, ValueError):
+            preserve_corrupt_json(path)
         return {}
     if not isinstance(raw, dict) or raw.get("version") != CACHE_VERSION:
         log.warning("[Nexus] Неверный формат кэша подсказок (%s); загружаю без него", path)
+        preserve_corrupt_json(path)
         return {}
 
     entries = raw.get("items")
     if not isinstance(entries, dict):
         log.warning("[Nexus] В кэше подсказок отсутствует объект items (%s)", path)
+        preserve_corrupt_json(path)
         return {}
     result: dict[int, InstallationNote] = {}
     for key, value in entries.items():
@@ -221,7 +227,7 @@ def _save_cache(items: dict[int, InstallationNote], path: Path) -> None:
         },
     }
     try:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(path, data)
     except OSError as exc:
         log.warning("[Nexus] Кэш подсказок не сохранён (%s): %s", path, exc)
     else:
@@ -445,13 +451,17 @@ def _load_analysis_cache(path: Path) -> dict[int, NexusModRecord]:
         return {}
     except (OSError, ValueError) as exc:
         log.warning("[Nexus AI] Кэш анализа не прочитан (%s): %s", path, exc)
+        if isinstance(exc, ValueError):
+            preserve_corrupt_json(path)
         return {}
     if not isinstance(raw, dict) or raw.get("version") != ANALYSIS_CACHE_VERSION:
         log.warning("[Nexus AI] Формат кэша анализа не распознан (%s); начинаю без кэша", path)
+        preserve_corrupt_json(path)
         return {}
     entries = raw.get("items")
     if not isinstance(entries, dict):
         log.warning("[Nexus AI] В кэше анализа отсутствует объект items (%s)", path)
+        preserve_corrupt_json(path)
         return {}
     result: dict[int, NexusModRecord] = {}
     for key, value in entries.items():
@@ -473,11 +483,7 @@ def _save_analysis_cache(records: dict[int, NexusModRecord], path: Path) -> None
         for mod_id, record in sorted(records.items())
     }
     try:
-        path.write_text(
-            json.dumps({"version": ANALYSIS_CACHE_VERSION, "items": items},
-                       ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_json(path, {"version": ANALYSIS_CACHE_VERSION, "items": items})
     except OSError as exc:
         log.warning("[Nexus AI] Кэш анализа не сохранён (%s): %s", path, exc)
     else:
