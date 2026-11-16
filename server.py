@@ -15,7 +15,7 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from json_files import atomic_write_json
 import nexus_links
@@ -27,6 +27,10 @@ BLACKLIST_PATH = ROOT / "blacklist.json"
 DEFAULT_MAX_MOD_ID = 35000
 BUILTIN_MOD_IDS = {786, 3560, 4088}
 MAX_CLEAN_ENTRIES = 5000
+MAX_BODY_BYTES = 1024 * 1024
+TOKEN_HEADER = "X-ModAudit-Token"
+# Шаблон дашборда содержит пустой meta; сервер вписывает в него токен при отдаче страницы.
+TOKEN_PLACEHOLDER = b'<meta name="api-token" content="">'
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
@@ -67,13 +71,32 @@ def load_core_settings(
     ))
 
 
-def in_downloads(path: str | os.PathLike[str], downloads: str | os.PathLike[str]) -> bool:
-    try:
-        real = os.path.normcase(os.path.realpath(path))
-        base = os.path.normcase(os.path.realpath(downloads))
-        return os.path.commonpath([real, base]) == base and real != base
-    except ValueError:
-        return False
+def inside_roots(
+    path: str | os.PathLike[str],
+    roots: Iterable[str | os.PathLike[str]],
+) -> bool:
+    """Лежит ли путь внутри одной из папок (или совпадает с ней) — по настоящим путям."""
+    real = os.path.normcase(os.path.realpath(path))
+    for root in roots:
+        base = os.path.normcase(os.path.realpath(root))
+        try:
+            if os.path.commonpath([real, base]) == base:
+                return True
+        except ValueError:   # разные диски
+            continue
+    return False
+
+
+def insert_token(page: bytes, token: str) -> bytes:
+    """Вписывает токен запуска в отдаваемую страницу; файл отчёта на диске не меняется."""
+    meta = f'<meta name="api-token" content="{token}">'.encode("ascii")
+    if TOKEN_PLACEHOLDER in page:
+        return page.replace(TOKEN_PLACEHOLDER, meta, 1)
+    head = page.lower().find(b"<head>")
+    if head < 0:
+        return meta + page
+    cut = head + len(b"<head>")
+    return page[:cut] + meta + page[cut:]
 
 
 def make_handler(
@@ -81,13 +104,17 @@ def make_handler(
     dashboard: Path,
     blacklist: Path = BLACKLIST_PATH,
     config: dict[str, Any] | None = None,
-    port: int = PORT,
+    port: int | None = None,
     quarantine: Path | None = None,
+    reveal_roots: Iterable[Path | None] = (),
 ) -> type[BaseHTTPRequestHandler]:
     settings = config or {}
-    origins = {f"http://localhost:{port}", f"http://127.0.0.1:{port}"}
     if quarantine is None and downloads is not None:
         quarantine = downloads / nexus_links.QUARANTINE_DIRNAME
+    # «Показать в Проводнике» работает только внутри известных проекту папок.
+    allowed_reveal = [root for root in (downloads, quarantine, *reveal_roots) if root is not None]
+    # Токен на запуск: знает его только страница, которую отдал этот сервер.
+    api_token = secrets.token_urlsafe(32)
     # Подтверждение привязывает apply к тому списку, который показал предпросмотр.
     clean_secret = secrets.token_bytes(32)
     clean_lock = threading.Lock()
@@ -106,12 +133,45 @@ def make_handler(
             code: int,
             body: bytes,
             content_type: str = "application/json; charset=utf-8",
+            extra_headers: dict[str, str] | None = None,
         ) -> None:
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            for name, value in (extra_headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
+
+        def local_port(self) -> int:
+            return port if port is not None else self.server.server_address[1]
+
+        def host_is_local(self) -> bool:
+            """Защита от DNS rebinding: имя хоста в запросе должно быть локальным."""
+            host = (self.headers.get("Host") or "").strip().lower()
+            return host in {f"localhost:{self.local_port()}", f"127.0.0.1:{self.local_port()}"}
+
+        def origin_is_allowed(self) -> bool:
+            origin = self.headers.get("Origin")
+            if origin is None:
+                # Без Origin верим только явной отметке браузера «запрос с той же страницы».
+                return self.headers.get("Sec-Fetch-Site") == "same-origin"
+            return origin in {f"http://localhost:{self.local_port()}",
+                              f"http://127.0.0.1:{self.local_port()}"}
+
+        def read_body(self) -> bytes | None:
+            """Тело запроса не больше MAX_BODY_BYTES; иначе отвечает сам и возвращает None."""
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            if length < 0:
+                self.reply_json(400, "bad_request")
+                return None
+            if length > MAX_BODY_BYTES:
+                self.reply_json(413, "payload_too_large")
+                return None
+            return self.rfile.read(length)
 
         def reply_json(self, code: int, status: str) -> None:
             self.reply_data(code, {"status": status})
@@ -120,24 +180,42 @@ def make_handler(
             self.reply(code, json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
         def do_GET(self) -> None:
+            if not self.host_is_local():
+                self.reply_json(403, "forbidden_host")
+                return
             if self.path.split("?", 1)[0] not in ("/", "/index.html"):
                 self.reply_json(404, "not_found")
                 return
             if not dashboard.is_file():
                 self.reply_json(404, "dashboard_not_generated")
                 return
-            self.reply(200, dashboard.read_bytes(), "text/html; charset=utf-8")
+            # no-store: после перезапуска сервера страница из кэша несла бы старый токен.
+            self.reply(200, insert_token(dashboard.read_bytes(), api_token),
+                       "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+
+        def do_OPTIONS(self) -> None:
+            # Чужим страницам preflight не разрешаем, своей он не нужен.
+            self.reply(405, json.dumps({"status": "method_not_allowed"}).encode("utf-8"),
+                       extra_headers={"Allow": "GET, POST"})
 
         def do_POST(self) -> None:
-            origin = self.headers.get("Origin")
-            if origin and origin not in origins:
+            if not self.host_is_local():
+                self.reply_json(403, "forbidden_host")
+                return
+            if not self.origin_is_allowed():
                 self.reply_json(403, "forbidden_origin")
                 return
+            content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0]
+            if content_type.strip().lower() != "application/json":
+                self.reply_json(415, "unsupported_media_type")
+                return
+            supplied_token = self.headers.get(TOKEN_HEADER) or ""
+            if not hmac.compare_digest(supplied_token.encode("utf-8"), api_token.encode("utf-8")):
+                self.reply_json(403, "bad_token")
+                return
 
-            try:
-                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            except (ValueError, TypeError):
-                self.reply_json(400, "bad_request")
+            raw = self.read_body()
+            if raw is None:
                 return
             if self.path == "/api/delete":
                 # Прямое удаление убрано: очистка идёт только через предпросмотр и карантин.
@@ -228,15 +306,22 @@ def make_handler(
             self.reply_json(200, "ok")
 
         def handle_reveal(self, path: str) -> None:
+            # Сначала границы, потом существование: о файлах вне папок проекта не сообщаем ничего.
+            if "\0" in path or not inside_roots(path, allowed_reveal):
+                self.reply_json(403, "outside_allowed_folders")
+                return
             if not os.path.exists(path):
                 self.reply_json(404, "file_not_found")
                 return
             target = os.path.normpath(path)
-            folder = target if os.path.isdir(target) else os.path.dirname(target)
             try:
-                subprocess.Popen(["explorer", folder])
+                if os.path.isdir(target):
+                    subprocess.Popen(["explorer", target])
+                else:
+                    # Одной строкой: Проводник ждёт именно /select,"путь" и тогда выделяет файл.
+                    subprocess.Popen(f'explorer /select,"{target}"')
             except OSError as exc:
-                print(f"Не удалось открыть папку {folder}: {exc}", file=sys.stderr)
+                print(f"Не удалось открыть {target} в Проводнике: {exc}", file=sys.stderr)
                 self.reply_json(500, "reveal_failed")
                 return
             self.reply_json(200, "ok")
@@ -309,6 +394,7 @@ def make_handler(
                 "log": str(outcome.log_path) if outcome.log_path else "",
             })
 
+    DashboardHandler.api_token = api_token   # для тестов; в ответах сервера токена нет, кроме самой страницы
     return DashboardHandler
 
 
@@ -319,7 +405,10 @@ def main(arguments: list[str] | None = None) -> None:
     dashboard = resolve_dashboard(config, args)
     core = load_core_settings(args)
     downloads = core.downloads
-    handler = make_handler(downloads, dashboard, config=config, quarantine=core.quarantine)
+    handler = make_handler(
+        downloads, dashboard, config=config, port=PORT, quarantine=core.quarantine,
+        reveal_roots=[core.vortex, core.game],
+    )
     if downloads is None:
         print("Папка downloads не задана (config.json или первый аргумент): "
               "очистка из дашборда отключена.")

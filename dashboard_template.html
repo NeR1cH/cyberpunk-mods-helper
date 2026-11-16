@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<meta name="api-token" content="">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#07060f">
 <title>Cyberpunk 2077 — Мод-Аудитор</title>
@@ -660,9 +661,15 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         };
     }
 
-    // Ответы сервера на /api/clean/* → текст для пользователя.
-    function cleanMessage(status) {
+    // Отказы сервера → текст для пользователя.
+    function serverMessage(status) {
         const messages = {
+            bad_token: 'Сервер был перезапущен или отчёт создан старой версией. Обновите страницу (F5); если не помогло — запустите сканирование заново.',
+            forbidden_host: 'Сервер принимает запросы только по адресу http://localhost:8000.',
+            unsupported_media_type: 'Сервер не принял запрос. Обновите страницу (F5).',
+            payload_too_large: 'Слишком много файлов за один раз. Отметьте меньше или используйте «Экспорт JSON для clean».',
+            outside_allowed_folders: 'Сервер открывает в Проводнике только папки Downloads, Vortex, игры и карантина из config.json.',
+            method_not_allowed: 'Сервер не принял запрос. Обновите страницу (F5).',
             downloads_not_configured: 'В config.json не задана папка downloads, поэтому очистка из дашборда отключена. Укажите её и перезапустите start.bat.',
             preview_required: 'Список изменился после предпросмотра. Откройте предпросмотр заново.',
             clean_in_progress: 'Перенос уже выполняется. Дождитесь его завершения.',
@@ -708,10 +715,13 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         }
     }
 
+    // Токен запуска сервер вписывает в <meta name="api-token"> при отдаче страницы.
+    const apiToken = (document.querySelector('meta[name="api-token"]') || {}).content || '';
+
     function postJson(url, payload) {
         return fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-ModAudit-Token': apiToken },
             body: JSON.stringify(payload)
         });
     }
@@ -940,7 +950,7 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
                         blacklist_write_failed: 'Не удалось сохранить blacklist.json.',
                         bad_reason: 'Причина должна содержать от 1 до 500 символов.'
                     };
-                    toast(messages[body.status] || 'Не удалось изменить чёрный список.', true);
+                    toast(messages[body.status] || serverMessage(body.status), true);
                     return;
                 }
                 if (removing) {
@@ -973,6 +983,11 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
                 if (body.status === 'reveal_failed') {
                     flash(revealBtn, 'Не удалось открыть', 'btn-err');
                     toast('Не удалось открыть папку в Проводнике.');
+                    return;
+                }
+                if (body.status) {   // сервер работает, но отказал — объясняем, а не молчим
+                    flash(revealBtn, 'Не открыто', 'btn-err');
+                    toast(serverMessage(body.status), true);
                     return;
                 }
                 throw new Error('server ' + res.status);
@@ -1048,7 +1063,7 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
             return { error: 'Сервер не запущен. Запустите start.bat (или python server.py) либо используйте «Экспорт JSON для clean».' };
         }
         const body = await res.json().catch(() => ({}));
-        return res.ok ? { body } : { error: cleanMessage(body.status) };
+        return res.ok ? { body } : { error: serverMessage(body.status) };
     }
 
     function removeFilesFromPage(paths) {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import tempfile
 import threading
 import unittest
@@ -24,6 +25,8 @@ class DashboardServerTests(unittest.TestCase):
         self.dashboard.write_text("<h1>Dashboard</h1>", encoding="utf-8")
         self.blacklist = self.root / "blacklist.json"
         self.quarantine = self.root / "quarantine"
+        self.vortex = self.root / "vortex"
+        self.game = self.root / "game"
         self.servers: list[tuple[ThreadingHTTPServer, threading.Thread]] = []
         self.base_url = self.start_server(self.downloads)
 
@@ -34,13 +37,16 @@ class DashboardServerTests(unittest.TestCase):
             blacklist=self.blacklist,
             config={"max_mod_id": 40000},
             quarantine=self.quarantine,
+            reveal_roots=[self.vortex, self.game],
         )
+        self.token = handler.api_token
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         # Короткий опрос: иначе каждое shutdown() ждёт полсекунды и тесты идут вдвое дольше.
         thread = threading.Thread(
             target=httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         thread.start()
         self.servers.append((httpd, thread))
+        self.port = httpd.server_port
         return f"http://127.0.0.1:{httpd.server_port}"
 
     def tearDown(self) -> None:
@@ -81,13 +87,19 @@ class DashboardServerTests(unittest.TestCase):
         headers: dict[str, str] | None = None,
     ) -> tuple[int, bytes]:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
-        request_headers = headers or {}
+        request_headers = dict(headers or {})
         if data is not None:
-            request_headers = {"Content-Type": "application/json", **request_headers}
+            # То, что шлёт сам дашборд; значение None убирает заголовок из запроса.
+            request_headers = {
+                "Content-Type": "application/json",
+                "Origin": self.base_url,
+                "X-ModAudit-Token": self.token,
+                **request_headers,
+            }
         request = Request(
             self.base_url + path,
             data=data,
-            headers=request_headers,
+            headers={name: value for name, value in request_headers.items() if value is not None},
             method=method,
         )
         try:
@@ -96,9 +108,17 @@ class DashboardServerTests(unittest.TestCase):
         except HTTPError as exc:
             return exc.code, exc.read()
 
-    def post_json(self, path: str, payload: object, origin: str | None = None) -> tuple[int, dict]:
-        headers = {"Origin": origin} if origin is not None else None
-        status, body = self.request("POST", path, payload, headers)
+    def post_json(
+        self,
+        path: str,
+        payload: object,
+        origin: str | None = None,
+        headers: dict[str, str | None] | None = None,
+    ) -> tuple[int, dict]:
+        request_headers = dict(headers or {})
+        if origin is not None:
+            request_headers["Origin"] = origin
+        status, body = self.request("POST", path, payload, request_headers)
         return status, json.loads(body)
 
     def test_config_loading_and_path_resolution(self) -> None:
@@ -125,20 +145,21 @@ class DashboardServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             dashboard_server.load_config(config_path)
 
-    def test_download_path_check_uses_directory_boundaries(self) -> None:
-        self.assertFalse(dashboard_server.in_downloads(self.downloads, self.downloads))
-        self.assertTrue(dashboard_server.in_downloads(self.downloads / "mod.zip", self.downloads))
+    def test_folder_check_uses_directory_boundaries(self) -> None:
+        roots = [self.downloads, self.game]
+        self.assertTrue(dashboard_server.inside_roots(self.downloads, roots))
+        self.assertTrue(dashboard_server.inside_roots(self.downloads / "mod.zip", roots))
+        self.assertTrue(dashboard_server.inside_roots(self.game / "archive" / "pc", roots))
         self.assertFalse(
-            dashboard_server.in_downloads(
-                self.root / "downloads-other" / "mod.zip",
-                self.downloads,
-            )
-        )
+            dashboard_server.inside_roots(self.root / "downloads-other" / "mod.zip", roots))
+        self.assertFalse(
+            dashboard_server.inside_roots(self.downloads / ".." / "secret.txt", roots))
+        self.assertFalse(dashboard_server.inside_roots(self.downloads / "mod.zip", []))
 
     def test_dashboard_is_served_only_for_document_routes(self) -> None:
         status, body = self.request("GET", "/?refresh=1")
         self.assertEqual(status, 200)
-        self.assertEqual(body, b"<h1>Dashboard</h1>")
+        self.assertTrue(body.endswith(b"<h1>Dashboard</h1>"))
         self.assertEqual(self.request("GET", "/missing")[0], 404)
 
     def test_post_rejects_foreign_origin_and_non_object_json(self) -> None:
@@ -341,7 +362,144 @@ class DashboardServerTests(unittest.TestCase):
             )
 
         self.assertEqual((status, result["status"]), (200, "ok"))
-        popen.assert_called_once_with(["explorer", str(self.downloads)])
+        popen.assert_called_once_with(f'explorer /select,"{candidate}"')
+
+    # ---------- S06: по одному тесту на каждое правило ----------
+
+    def test_rule_1_host_header_must_be_local(self) -> None:
+        for host in ("attacker.example", f"attacker.example:{self.port}", "127.0.0.1:1"):
+            with self.subTest(host=host):
+                status, body = self.request("GET", "/", headers={"Host": host})
+                self.assertEqual((status, json.loads(body)["status"]), (403, "forbidden_host"))
+                self.assertNotIn(self.token.encode(), body)
+                status, result = self.post_json(
+                    "/api/clean/preview", {"files": []}, headers={"Host": host})
+                self.assertEqual((status, result["status"]), (403, "forbidden_host"))
+
+        for host in (f"localhost:{self.port}", f"LOCALHOST:{self.port}", f"127.0.0.1:{self.port}"):
+            with self.subTest(host=host):
+                self.assertEqual(self.request("GET", "/", headers={"Host": host})[0], 200)
+
+    def test_rule_2_post_requires_json_content_type(self) -> None:
+        for content_type in ("text/plain", "application/x-www-form-urlencoded", None):
+            with self.subTest(content_type=content_type):
+                status, result = self.post_json(
+                    "/api/clean/preview", {"files": []}, headers={"Content-Type": content_type})
+                self.assertEqual((status, result["status"]), (415, "unsupported_media_type"))
+
+        status, _ = self.post_json(
+            "/api/clean/preview", {"files": []},
+            headers={"Content-Type": "application/json; charset=utf-8"})
+        self.assertEqual(status, 200)
+
+    def test_rule_3_post_requires_allowed_origin_or_same_origin_fetch(self) -> None:
+        rejected = (
+            {"Origin": None},
+            {"Origin": None, "Sec-Fetch-Site": "cross-site"},
+            {"Origin": None, "Sec-Fetch-Site": "same-site"},
+            {"Origin": "https://attacker.example"},
+            {"Origin": "null"},
+            {"Origin": "https://attacker.example", "Sec-Fetch-Site": "same-origin"},
+        )
+        for headers in rejected:
+            with self.subTest(headers=headers):
+                status, result = self.post_json("/api/clean/preview", {"files": []}, headers=headers)
+                self.assertEqual((status, result["status"]), (403, "forbidden_origin"))
+
+        accepted = (
+            {"Origin": f"http://localhost:{self.port}"},
+            {"Origin": f"http://127.0.0.1:{self.port}"},
+            {"Origin": None, "Sec-Fetch-Site": "same-origin"},
+        )
+        for headers in accepted:
+            with self.subTest(headers=headers):
+                status, _ = self.post_json("/api/clean/preview", {"files": []}, headers=headers)
+                self.assertEqual(status, 200)
+
+    def test_rule_4_post_requires_the_token_from_the_served_page(self) -> None:
+        self.dashboard.write_text(
+            '<html><head><meta name="api-token" content=""></head><body>Отчёт</body></html>',
+            encoding="utf-8",
+        )
+        _, page = self.request("GET", "/")
+        served = re.search(r'<meta name="api-token" content="([^"]+)">', page.decode("utf-8"))
+
+        self.assertIsNotNone(served)
+        self.assertEqual(page.count(b'name="api-token"'), 1)
+        self.assertNotIn(self.token, self.dashboard.read_text(encoding="utf-8"))
+        for token in (None, "", "wrong", served.group(1) + "x"):
+            with self.subTest(token=token):
+                status, result = self.post_json(
+                    "/api/clean/preview", {"files": []}, headers={"X-ModAudit-Token": token})
+                self.assertEqual((status, result["status"]), (403, "bad_token"))
+        status, _ = self.post_json(
+            "/api/clean/preview", {"files": []}, headers={"X-ModAudit-Token": served.group(1)})
+        self.assertEqual(status, 200)
+
+        first_token = self.token
+        self.start_server(self.downloads)
+        self.assertNotEqual(self.token, first_token)
+        self.assertGreaterEqual(len(self.token), 32)
+
+    def test_rule_5_request_body_is_limited_to_one_megabyte(self) -> None:
+        limit = dashboard_server.MAX_BODY_BYTES
+        self.assertEqual(limit, 1024 * 1024)
+
+        status, result = self.post_json(
+            "/api/clean/preview", {"files": []}, headers={"Content-Length": str(limit + 1)})
+        self.assertEqual((status, result["status"]), (413, "payload_too_large"))
+
+        for length in ("-1", "many"):
+            with self.subTest(length=length):
+                status, result = self.post_json(
+                    "/api/clean/preview", {"files": []}, headers={"Content-Length": length})
+                self.assertEqual((status, result["status"]), (400, "bad_request"))
+
+        padding = "x" * (limit - 200)
+        status, _ = self.post_json("/api/clean/preview", {"files": [], "padding": padding})
+        self.assertEqual(status, 200)
+
+    def test_rule_6_reveal_is_limited_to_configured_folders(self) -> None:
+        outside = self.root / "private" / "notes.txt"
+        outside.parent.mkdir()
+        outside.write_text("secret", encoding="utf-8")
+        with patch("server.subprocess.Popen") as popen:
+            for path in (outside, outside.parent, self.root, self.downloads / ".." / "private"):
+                with self.subTest(path=path):
+                    status, result = self.post_json("/api/reveal", {"path": str(path)})
+                    self.assertEqual((status, result["status"]), (403, "outside_allowed_folders"))
+            status, result = self.post_json(
+                "/api/reveal", {"path": str(self.root / "private" / "missing.txt")})
+            self.assertEqual((status, result["status"]), (403, "outside_allowed_folders"))
+        popen.assert_not_called()
+
+        for folder in (self.vortex, self.game, self.quarantine):
+            folder.mkdir()
+            archive = folder / "Мод с пробелом.zip"
+            archive.write_bytes(b"mod")
+            with self.subTest(folder=folder.name), patch("server.subprocess.Popen") as popen:
+                status, result = self.post_json("/api/reveal", {"path": str(archive)})
+                self.assertEqual((status, result["status"]), (200, "ok"))
+                popen.assert_called_once_with(f'explorer /select,"{archive}"')
+
+        with patch("server.subprocess.Popen") as popen:
+            status, result = self.post_json("/api/reveal", {"path": str(self.game)})
+        self.assertEqual((status, result["status"]), (200, "ok"))
+        popen.assert_called_once_with(["explorer", str(self.game)])
+
+    def test_rule_7_options_is_answered_with_405(self) -> None:
+        status, body = self.request(
+            "OPTIONS", "/api/clean/apply",
+            headers={"Origin": "https://attacker.example",
+                     "Access-Control-Request-Method": "POST"})
+
+        self.assertEqual((status, json.loads(body)["status"]), (405, "method_not_allowed"))
+
+    def test_dashboard_template_sends_the_token_and_has_the_placeholder(self) -> None:
+        template = nexus_links.TEMPLATE_PATH.read_text(encoding="utf-8")
+
+        self.assertEqual(template.count(dashboard_server.TOKEN_PLACEHOLDER.decode()), 1)
+        self.assertIn("'X-ModAudit-Token': apiToken", template)
 
 
 if __name__ == "__main__":

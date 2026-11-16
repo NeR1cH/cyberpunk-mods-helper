@@ -111,16 +111,22 @@ class DashboardLogicTests(unittest.TestCase):
             assert.equal(baseName('/home/user/dl/mod.zip'), 'mod.zip');
         """)
 
-    def test_every_clean_status_of_the_server_has_a_message(self) -> None:
+    def test_every_refusal_of_the_server_has_a_message(self) -> None:
         source = SERVER_SOURCE.read_text(encoding="utf-8")
-        handler = source[source.index("def handle_clean("):source.index("return DashboardHandler")]
-        statuses = sorted(set(re.findall(r'reply_json\(\d+, "([a-z_]+)"\)', handler)))
-        self.assertIn("preview_required", statuses)
+        statuses = set(re.findall(r'reply_json\(\d+, "([a-z_]+)"\)', source))
+        statuses |= set(re.findall(r'\{"status": "([a-z_]+)"\}', source))
+        # Эти ответы страница разбирает сама, отдельным текстом рядом с кнопкой.
+        statuses -= {"ok", "file_not_found", "reveal_failed", "dashboard_not_generated",
+                     "bad_reason", "builtin_entry", "blacklist_invalid", "blacklist_write_failed"}
+        for expected in ("preview_required", "bad_token", "forbidden_host", "payload_too_large",
+                         "outside_allowed_folders", "method_not_allowed"):
+            self.assertIn(expected, statuses)
+        statuses = sorted(statuses)
 
         self.run_js(f"""
-            const fallback = cleanMessage('no_such_status');
-            for (const status of {json.dumps(statuses + ["not_found", "gone", "forbidden_origin"])}) {{
-                assert.notEqual(cleanMessage(status), fallback, status);
+            const fallback = serverMessage('no_such_status');
+            for (const status of {json.dumps(statuses)}) {{
+                assert.notEqual(serverMessage(status), fallback, status);
             }}
         """)
 
