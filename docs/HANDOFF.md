@@ -5,12 +5,12 @@
 ## Текущее состояние
 - База: `main` на `c56ce93` (код тот же, что в `21324f1` / `v1.2.0`, плюс загруженные документы).
 - Этап 1: сделаны S05, S04, S01, S03 — четыре коммита в ветке `ccr-612844ff-ulz29s`, PR #1 в `main` (мержит Никита).
-- S02 — ветка `fix/S02-safe-clean`, PR #2. S06 — ветка `fix/S06-server-hardening`, PR #3. S09 — ветка `refactor/S09-single-source`, PR #4. S08 — ветка `fix/S08-openrouter-limits`, PR #5. S07 — ветка `feat/S07-hash-cache-single-run`, PR #6. S10 — ветка `chore/S10-ci-version-changelog`, свой PR. Ветки задач идут цепочкой (каждая поверх предыдущей), мержить по порядку.
-- 195 тестов проходят (Python 3.13 и 3.10, Linux, Node.js 22); `ruff check` чист. `compileall` и `git diff --check` чистые.
+- S02 — ветка `fix/S02-safe-clean`, PR #2. S06 — ветка `fix/S06-server-hardening`, PR #3. S09 — ветка `refactor/S09-single-source`, PR #4. S08 — ветка `fix/S08-openrouter-limits`, PR #5. S07 — ветка `feat/S07-hash-cache-single-run`, PR #6. S10 — ветка `chore/S10-ci-version-changelog`, PR #7. S11 — ветка `fix/S11-small-fixes`, свой PR. Ветки задач идут цепочкой (каждая поверх предыдущей), мержить по порядку.
+- 207 тестов проходят (Python 3.13 и 3.10, Linux, Node.js 22); `ruff check` чист. `compileall` и `git diff --check` чистые.
 - `HANDOFF.md` и `ROADMAP.md` перенесены из `docs/images/` в `docs/`.
 
 ## Следующий шаг
-- Порядок, заданный Никитой: S11. Дальше по плану R01. После каждой задачи — отчёт, ветка и PR.
+- Этап 1 закрыт (S01–S11). Дальше по плану R01 → D01 → этап 2. Подробная передача дел — `docs/HANDOFF_OPUS.md`. После каждой задачи — отчёт, ветка и PR.
 
 ## Решения
 - **S05.** Общий модуль `json_files.py`: `atomic_write_json` и `preserve_corrupt_json`. Через него идут все записи JSON, включая счётчик OpenRouter и `blacklist.json` в сервере. Как `.corrupt-<дата>.json` сохраняется не только неразбираемый JSON, но и кэш с непригодной структурой или чужой `version`. Ошибка чтения (`OSError`) повреждением не считается.
@@ -29,6 +29,7 @@
 - **S07, один процесс.** `scan --ai-until-budget` повторяет раунды (пачки названий + анализ Nexus) в одном процессе; `--ai-max-requests`, `--nexus-ai-max-mods`, `--nexus-max-requests` задают размер раунда. Остановка: снимок прогресса не изменился, суточный лимит 0 или счётчик не читается, либо 100 раундов. Без ключа — один раунд. `start.bat` делает один вызов без цикла; `openrouter_limits.py progress` оставлен.
 - **S07, лимит за запуск.** По ответу на вопрос 7: если `ai.per_run_budget` не задан, он равен суточному (по умолчанию 10). Следствие: ручной `scan --ai` теперь может отправить до 8 пачек за запуск, а не 2.
 - **S10.** Версия задана один раз: `nexus_links.__version__` (сейчас `1.3.0.dev0`; при выпуске заменить на `1.3.0`). Её показывают `--version` и подвал отчёта. Добавлены `CHANGELOG.md` (с 1.2.0, раздел «Не выпущено» для этапа 1), `LICENSE` (MIT, правообладатель NeR1cH), `.github/workflows/tests.yml` (Windows и Ubuntu × Python 3.10 и 3.13; отдельная задача `ruff check --no-fix`, версия ruff закреплена) и `ruff.toml`. Теги и релизы не создавались.
+- **S11.** Equipment-EX определяется по файлам `archive\\pc\\mod\\EquipmentEx.archive` и `.archive.xl` (своей DLL у мода нет, папка скриптов остаётся после удаления); `check_game_core` требует именно файл. `start.bat` пробует `python`, затем `py -3`, и проверяет версию ≥ 3.10. `DEFAULT_AI_MODELS` приведён к списку из `config.example.json` (тест следит за совпадением); `ai-models --write-config` записывает `ai.models` в `config.json` после подтверждения. `fetch_nexus_mod_records` сохраняет кэш один раз за проход (и при прерывании), описание хранится в длине `MAX_ANALYSIS_DESCRIPTION_CHARS`.
 
 ## Ответы Никиты на вопросы раздела 8 (2026-11-16)
 - **1. Лицензия:** MIT, файл `LICENSE` добавить в S10.
@@ -56,3 +57,4 @@
 | 2026-11-16 | S08 | Готово, ветка `fix/S08-openrouter-limits`, свой PR; 151 → 167 тестов | Значения по умолчанию прежние (10 и 2) |
 | 2026-11-16 | S07 | Готово, ветка `feat/S07-hash-cache-single-run`, свой PR; 167 → 189 тестов | CLI проверен на временной папке: второй запуск берёт хеши из кэша. `start.bat` на Windows не запускался |
 | 2026-11-16 | S10 | Готово, ветка `chore/S10-ci-version-changelog`, свой PR; 189 → 195 тестов | Первый прогон CI покажет тесты на Windows |
+| 2026-11-16 | S11 | Готово, ветка `fix/S11-small-fixes`, свой PR; 195 → 207 тестов | Структура Equipment-EX сверена по описанию установки в сети, не на живой игре |

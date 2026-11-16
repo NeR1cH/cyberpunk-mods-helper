@@ -404,7 +404,7 @@ def _record_from_json(mod_id: int, raw: object) -> NexusModRecord | None:
         mod_id=mod_id,
         name=raw["name"][:300],
         summary=raw["summary"][:2000],
-        description=raw["description"][:MAX_DESCRIPTION_BYTES],
+        description=raw["description"][:MAX_ANALYSIS_DESCRIPTION_CHARS],
         category=raw["category"][:120],
         tags=tuple(tag[:120] for tag in raw["tags"] if isinstance(tag, str))[:100],
         fetched_at=float(raw["fetched_at"]),
@@ -520,7 +520,7 @@ def _record_from_page_payload(mod_id: int, payload: bytes) -> NexusModRecord:
         mod_id=mod_id,
         name=name[:300],
         summary=str(data.get("summary") or "")[:2000],
-        description=description,
+        description=description[:MAX_ANALYSIS_DESCRIPTION_CHARS],
         category=str(category)[:120],
         tags=tags[:100],
         fetched_at=time.time(),
@@ -549,25 +549,28 @@ def fetch_nexus_mod_records(
                  len(stale) - len(request_ids))
 
     updated = 0
-    for index, mod_id in enumerate(request_ids):
-        try:
-            payload = _request_mod_page(mod_id)
-            records[mod_id] = _record_from_page_payload(mod_id, payload)
-            updated += 1
-        except urllib.error.HTTPError as exc:
-            log.warning("[Nexus AI] Не удалось получить страницу #%d: HTTP %d", mod_id, exc.code)
-            if exc.code in {403, 404, 451}:
-                records[mod_id] = NexusModRecord(
-                    mod_id, "", "", "", "", (), time.time(), error_code=exc.code
-                )
+    try:
+        for index, mod_id in enumerate(request_ids):
+            try:
+                payload = _request_mod_page(mod_id)
+                records[mod_id] = _record_from_page_payload(mod_id, payload)
                 updated += 1
-        except (urllib.error.URLError, TimeoutError, OSError, UnicodeDecodeError, ValueError) as exc:
-            log.warning("[Nexus AI] Не удалось прочитать страницу #%d: %s", mod_id, exc)
+            except urllib.error.HTTPError as exc:
+                log.warning("[Nexus AI] Не удалось получить страницу #%d: HTTP %d", mod_id, exc.code)
+                if exc.code in {403, 404, 451}:
+                    records[mod_id] = NexusModRecord(
+                        mod_id, "", "", "", "", (), time.time(), error_code=exc.code
+                    )
+                    updated += 1
+            except (urllib.error.URLError, TimeoutError, OSError, UnicodeDecodeError, ValueError) as exc:
+                log.warning("[Nexus AI] Не удалось прочитать страницу #%d: %s", mod_id, exc)
+            if index + 1 < len(request_ids):
+                time.sleep(REQUEST_INTERVAL_SECONDS)
+    finally:
+        # Одна запись на весь проход, а не после каждой страницы; finally сохраняет
+        # уже полученное и при прерывании (Ctrl+C) или неожиданной ошибке.
         if updated:
             _save_analysis_cache(records, cache_path)
-            updated = 0
-        if index + 1 < len(request_ids):
-            time.sleep(REQUEST_INTERVAL_SECONDS)
 
     return {mod_id: records[mod_id] for mod_id in requested if mod_id in records}
 

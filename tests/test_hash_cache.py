@@ -312,7 +312,7 @@ class SingleProcessStartScriptTests(unittest.TestCase):
     def test_start_script_runs_one_scan_and_has_no_loop(self) -> None:
         script = (PROJECT_ROOT / "start.bat").read_text(encoding="utf-8")
 
-        self.assertEqual(script.count("python nexus_links.py scan"), 1)
+        self.assertEqual(script.count("nexus_links.py scan"), 1)
         self.assertIn("--ai-until-budget", script)
         for leftover in ("scan_loop", "goto", "openrouter_limits.py progress"):
             with self.subTest(leftover=leftover):

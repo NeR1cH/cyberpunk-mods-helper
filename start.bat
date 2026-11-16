@@ -9,16 +9,27 @@ echo  Cyberpunk 2077 Mod Auditor
 echo ======================================================
 echo.
 
-:: 1. Проверка Python
+:: 1. Проверка Python: сначала python, затем лаунчер py -3; нужна версия 3.10 или новее
+set "PY=python"
 python --version > nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo [!] Ошибка: Python не обнаружен в PATH.
+if errorlevel 1 set "PY=py -3"
+%PY% --version > nul 2>&1
+if errorlevel 1 (
+    echo [!] Ошибка: Python не обнаружен ^(ни python, ни py -3^).
     echo     Установите Python 3.10+ с галочкой "Add python.exe to PATH".
     echo.
     pause
     exit /b 1
 )
-echo [+] Python обнаружен.
+%PY% -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+if errorlevel 1 (
+    echo [!] Ошибка: нужен Python 3.10 или новее, а найден:
+    %PY% --version
+    echo.
+    pause
+    exit /b 1
+)
+echo [+] Python обнаружен: %PY%
 
 :: 2. Создание config.json из примера
 set "CONFIG_CREATED=0"
@@ -73,7 +84,7 @@ echo  Внутренний лимит приложения: ai.daily_budget в c
 echo ======================================================
 echo.
 
-python nexus_links.py scan --no-open --ai-auto --ai-until-budget --ai-max-requests 1 --nexus-analyze --nexus-ai-max-mods 2 --nexus-max-requests 20
+%PY% nexus_links.py scan --no-open --ai-auto --ai-until-budget --ai-max-requests 1 --nexus-analyze --nexus-ai-max-mods 2 --nexus-max-requests 20
 if errorlevel 1 (
     echo.
     echo [!] Сканирование не удалось.
@@ -89,4 +100,4 @@ echo  Запуск дашборда на http://localhost:8000
 echo  Для завершения нажмите Ctrl+C.
 echo ======================================================
 echo.
-python server.py
+%PY% server.py

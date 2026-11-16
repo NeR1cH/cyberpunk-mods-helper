@@ -97,12 +97,8 @@ CORE_FRAMEWORKS: dict[str, list[str]] = {
     "TweakXL": [r"red4ext\plugins\TweakXL\TweakXL.dll"],
     "Codeware": [r"red4ext\plugins\Codeware\Codeware.dll"],
     "Equipment-EX": [
-        r"red4ext\plugins\EquipmentEx\EquipmentEx.dll",
-        r"red4ext\plugins\Equipment-EX\Equipment-EX.dll",
-        r"red4ext\plugins\EquipmentEx",
-        r"red4ext\plugins\Equipment-EX",
-        r"r6\scripts\EquipmentEx",
-        r"r6\scripts\Equipment-EX",
+        r"archive\pc\mod\EquipmentEx.archive",
+        r"archive\pc\mod\EquipmentEx.archive.xl",
     ],
     "Mod Settings": [r"red4ext\plugins\mod_settings\mod_settings.dll"],
     "Native Settings UI": [r"bin\x64\plugins\cyber_engine_tweaks\mods\nativeSettings\init.lua"],
@@ -566,7 +562,7 @@ def file_digests(path: Path, chunk: int = 4 << 20) -> tuple[str, str]:
 def check_game_core(game_path: Optional[Path]) -> dict[str, bool]:
     if game_path is None or not game_path.is_dir():
         return {}
-    return {name: any((game_path / rel).exists() for rel in rels)
+    return {name: any((game_path / PureWindowsPath(rel)).is_file() for rel in rels)
             for name, rels in CORE_FRAMEWORKS.items()}
 
 
@@ -984,9 +980,11 @@ def load_blacklist(path: Path = BLACKLIST_PATH) -> dict[int, str]:
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 AI_CACHE_PATH = SCRIPT_DIR / "ai_cache.json"
 # Бесплатные модели периодически меняются: актуальный список — `python nexus_links.py ai-models`.
+# Тот же список стоит в config.example.json (тест следит за совпадением). Бесплатные модели
+# меняются: актуальный список показывает `ai-models`, а `ai-models --write-config` записывает его.
 DEFAULT_AI_MODELS = [
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "nvidia/nemotron-3-nano-30b-a3b:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "google/gemma-4-31b-it:free",
 ]
 AI_BATCH_SIZE = 20          # модов в одном запросе
 AI_TIMEOUT = 120
@@ -1583,6 +1581,44 @@ def cmd_ai_models(args: argparse.Namespace) -> int:
     log.info("Модели из списка будут пробоваться по порядку. При ошибке/лимите переключение "
              "на следующую модель происходит без ожидания; успешная модель станет первой для следующих пачек.")
     log.info("Лимиты всей учётной записи, например суточная квота, переключением модели не обходятся.")
+    if getattr(args, "write_config", False):
+        return _write_models_to_config(
+            [m["id"] for m in free], _as_path(getattr(args, "config", None)) or CONFIG_PATH)
+    return 0
+
+
+def _write_models_to_config(models: list[str], config_path: Path) -> int:
+    """Записывает ai.models в config.json — только после явного подтверждения."""
+    cfg: dict = {}
+    if config_path.is_file():
+        try:
+            loaded = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:
+            log.error("Не удалось прочитать %s: %s. Файл не изменён.", config_path, exc)
+            return 2
+        if not isinstance(loaded, dict):
+            log.error("В %s ожидается JSON-объект с настройками. Файл не изменён.", config_path)
+            return 2
+        cfg = loaded
+    ai_cfg = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
+    log.info("")
+    log.info("В %s изменится только список ai.models (остальные настройки и ключ остаются):", config_path)
+    log.info("  было:  %s", ai_cfg.get("models", "не задан"))
+    log.info("  будет: %s", models)
+    try:
+        answer = input("Записать? [y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    if answer not in ("y", "yes", "д", "да"):
+        log.info("Отменено, config.json не изменён.")
+        return 0
+    cfg["ai"] = {**ai_cfg, "models": models}
+    try:
+        atomic_write_json(config_path, cfg)
+    except OSError as exc:
+        log.error("Не удалось записать %s: %s", config_path, exc)
+        return 1
+    log.info("Список моделей записан в %s.", config_path)
     return 0
 
 
@@ -2455,6 +2491,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.set_defaults(func=cmd_scan)
 
     p_models = sub.add_parser("ai-models", help="показать бесплатные модели OpenRouter")
+    p_models.add_argument("--config", help="путь к config.json (по умолчанию — рядом со скриптом)")
+    p_models.add_argument("--write-config", action="store_true",
+                          help="после подтверждения записать показанный список в ai.models файла config.json")
     p_models.set_defaults(func=cmd_ai_models)
 
     p_clean = sub.add_parser("clean", parents=[common], help="применить список очистки из дашборда")
