@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
 
-from json_files import atomic_write_json
+from modaudit.json_files import atomic_write_json
 import nexus_links
 
 PORT = 8000

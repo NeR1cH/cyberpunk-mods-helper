@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import mod_recommendations
+from modaudit import nexus as mod_recommendations
 import nexus_links
 
 ROOT = Path(nexus_links.__file__).resolve().parent
@@ -120,9 +120,9 @@ class NexusCacheWriteTests(unittest.TestCase):
         return json.dumps({"data": {"name": f"Mod {mod_id}", "description": description}}).encode()
 
     def fetch(self, cache: Path, pages: list, mod_ids: set[int]):
-        with patch("mod_recommendations._request_mod_page", side_effect=pages), \
-                patch("mod_recommendations.time.sleep"), \
-                patch("mod_recommendations._save_analysis_cache",
+        with patch("modaudit.nexus._request_mod_page", side_effect=pages), \
+                patch("modaudit.nexus.time.sleep"), \
+                patch("modaudit.nexus._save_analysis_cache",
                       wraps=mod_recommendations._save_analysis_cache) as save:
             try:
                 result = mod_recommendations.fetch_nexus_mod_records(mod_ids, cache, 10)

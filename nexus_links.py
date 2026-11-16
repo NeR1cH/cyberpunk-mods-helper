@@ -41,10 +41,10 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote, quote_plus
 
-from hash_cache import HashCache
-from json_files import atomic_write_json, preserve_corrupt_json
-from mod_categories import build_scan_plan, source_categories, summarize_sources
-from openrouter_limits import (
+from modaudit.hash_cache import HashCache
+from modaudit.json_files import atomic_write_json, preserve_corrupt_json
+from modaudit.sources import build_scan_plan, source_categories, summarize_sources
+from modaudit.limits import (
     DAILY_REQUEST_BUDGET,
     block_remaining_requests_this_run,
     budgets_from_config,
@@ -54,7 +54,7 @@ from openrouter_limits import (
     reserve_request,
     wait_for_request_slot,
 )
-from mod_recommendations import (
+from modaudit.nexus import (
     InstallationNote,
     NexusModRecord,
     ANALYSIS_BATCH_SIZE,

@@ -10,9 +10,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from hash_cache import HashCache
+from modaudit.hash_cache import HashCache
 import nexus_links
-import openrouter_limits
+from modaudit import limits as openrouter_limits
 
 PROJECT_ROOT = Path(nexus_links.__file__).resolve().parent
 SHA = "ab" * 32
@@ -51,7 +51,7 @@ class HashCacheTests(unittest.TestCase):
 
     def test_unchanged_cache_is_not_rewritten(self) -> None:
         cache = HashCache(self.path)
-        with patch("hash_cache.atomic_write_json") as write:
+        with patch("modaudit.hash_cache.atomic_write_json") as write:
             cache.save()
             cache.put(self.root / "mod.zip", 1, 2, SHA, MD5)
             cache.save()

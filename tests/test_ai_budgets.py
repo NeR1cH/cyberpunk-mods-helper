@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import nexus_links
-import openrouter_limits
+from modaudit import limits as openrouter_limits
 
 
 class BudgetTestCase(unittest.TestCase):

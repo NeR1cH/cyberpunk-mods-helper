@@ -19,7 +19,7 @@ class VersionTests(unittest.TestCase):
 
         self.assertRegex(version, r"^\d+\.\d+\.\d+(\.dev\d+|(a|b|rc)\d+)?$")
         literal = re.compile(r"\b\d+\.\d+\.\d+(?:\.dev\d+)?\b")
-        owners = [path.name for path in sorted(ROOT.glob("*.py"))
+        owners = [path.name for path in sorted([*ROOT.glob("*.py"), *(ROOT / "modaudit").glob("*.py")])
                   if version in literal.findall(path.read_text(encoding="utf-8"))]
         self.assertEqual(owners, ["nexus_links.py"])
 

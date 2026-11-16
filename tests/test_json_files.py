@@ -7,9 +7,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import mod_recommendations
+from modaudit import nexus as mod_recommendations
 import nexus_links
-import openrouter_limits
+from modaudit import limits as openrouter_limits
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -59,7 +59,7 @@ def _leftovers(folder: Path, keep: Path) -> list[str]:
 
 class AtomicWriteJsonTests(unittest.TestCase):
     def test_writes_utf8_json_and_leaves_no_temporary_files(self) -> None:
-        from json_files import atomic_write_json
+        from modaudit.json_files import atomic_write_json
 
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "папка с пробелом" / "cache.json"
@@ -74,13 +74,13 @@ class AtomicWriteJsonTests(unittest.TestCase):
             self.assertEqual(_leftovers(path.parent, path), [])
 
     def test_failed_replace_keeps_previous_file_and_removes_temporary_file(self) -> None:
-        from json_files import atomic_write_json
+        from modaudit.json_files import atomic_write_json
 
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "cache.json"
             path.write_text('{"old": true}', encoding="utf-8")
 
-            with patch("json_files.os.replace", side_effect=PermissionError("file is locked")):
+            with patch("modaudit.json_files.os.replace", side_effect=PermissionError("file is locked")):
                 with self.assertRaises(OSError):
                     atomic_write_json(path, {"new": True})
 
@@ -88,7 +88,7 @@ class AtomicWriteJsonTests(unittest.TestCase):
             self.assertEqual(_leftovers(path.parent, path), [])
 
     def test_unserializable_data_does_not_touch_the_file(self) -> None:
-        from json_files import atomic_write_json
+        from modaudit.json_files import atomic_write_json
 
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "cache.json"
@@ -185,7 +185,7 @@ class CacheWriteSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             usage_path = Path(temp_dir) / "usage.json"
             with patch.object(openrouter_limits, "_requests_this_process", 0):
-                with patch("json_files.os.replace", side_effect=OSError("interrupted")):
+                with patch("modaudit.json_files.os.replace", side_effect=OSError("interrupted")):
                     with self.assertLogs("modaudit", level="ERROR"):
                         self.assertFalse(openrouter_limits.reserve_request(usage_path))
 
@@ -199,7 +199,7 @@ class SingleJsonWriterTests(unittest.TestCase):
         direct_write = re.compile(r"write_text\(\s*json\.dumps|json\.dump\(")
         offenders = [
             source.name
-            for source in sorted(PROJECT_ROOT.glob("*.py"))
+            for source in sorted([*PROJECT_ROOT.glob("*.py"), *(PROJECT_ROOT / "modaudit").glob("*.py")])
             if source.name != "json_files.py"
             and direct_write.search(source.read_text(encoding="utf-8"))
         ]

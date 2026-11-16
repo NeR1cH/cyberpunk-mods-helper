@@ -1,6 +1,6 @@
 import unittest
 
-import mod_recommendations
+from modaudit import nexus as mod_recommendations
 
 
 class CacheFreshnessTests(unittest.TestCase):

@@ -5,8 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import nexus_links
-from mod_categories import build_scan_plan, source_categories, summarize_sources
-from mod_recommendations import InstallationNote
+from modaudit.sources import build_scan_plan, source_categories, summarize_sources
+from modaudit.nexus import InstallationNote
 
 
 def archive(file_id: int, source: str, title: str, mod_id: int | None = None) -> nexus_links.Archive:
