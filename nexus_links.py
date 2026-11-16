@@ -35,12 +35,13 @@ import zipfile
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Iterable, Optional
 import urllib.error
 import urllib.request
 from urllib.parse import quote, quote_plus
 
+from json_files import atomic_write_json, preserve_corrupt_json
 from mod_categories import build_scan_plan, source_categories, summarize_sources
 from openrouter_limits import (
     block_remaining_requests_this_run,
@@ -1147,6 +1148,8 @@ def load_ai_cache(path: Path = AI_CACHE_PATH) -> dict[str, dict]:
         return {}
     except (OSError, ValueError) as exc:
         log.warning("[AI] кэш не прочитан (%s): %s", path, exc)
+        if isinstance(exc, ValueError):
+            preserve_corrupt_json(path)
         return {}
     try:
         items = raw.get("items", {})
@@ -1155,13 +1158,13 @@ def load_ai_cache(path: Path = AI_CACHE_PATH) -> dict[str, dict]:
     except AttributeError:
         pass
     log.warning("[AI] кэш имеет неверный формат (%s); начинаю с пустого кэша", path)
+    preserve_corrupt_json(path)
     return {}
 
 
 def save_ai_cache(items: dict[str, dict], path: Path = AI_CACHE_PATH) -> None:
     try:
-        path.write_text(json.dumps({"version": 1, "items": items}, ensure_ascii=False, indent=1),
-                        encoding="utf-8")
+        atomic_write_json(path, {"version": 1, "items": items}, indent=1)
     except OSError as exc:
         log.warning("[AI] кэш не сохранён (%s): %s", path, exc)
     else:
@@ -1738,13 +1741,48 @@ def _dashboard_file_data(
     return index_of, file_json
 
 
+def source_label(name: str, folder: Optional[Path]) -> str:
+    """Подпись источника с его настоящим диском: «Downloads (E:)», а не зашитые C: и D:."""
+    if folder is None:
+        return f"{name} (не задан)"
+    # PureWindowsPath разбирает путь одинаково на любой ОС; у пути без диска drive пустой.
+    drive = PureWindowsPath(str(folder)).drive
+    if len(drive) == 2:
+        drive = drive.upper()
+    return f"{name} ({drive})" if drive else name
+
+
+def duplicate_banner_text(archives: list[Archive], downloads_label: str, vortex_label: str) -> str:
+    """Где на самом деле остаётся файл, идентичный точным копиям (по keeper, а не по догадке)."""
+    by_id = {a.id: a for a in archives}
+    keepers = [by_id[a.keeper] for a in archives
+               if a.verdict == EXACT_DUP and a.keeper in by_id]
+    in_vortex = sum(1 for keeper in keepers if keeper.source == "vortex")
+    in_downloads = len(keepers) - in_vortex
+    if not keepers:
+        return "Точных копий не найдено."
+    if not in_downloads:
+        return (f"У каждой точной копии есть идентичный файл в {vortex_label}. "
+                f"Отмеченные копии можно убрать из {downloads_label}.")
+    if not in_vortex:
+        return (f"У каждой точной копии остаётся идентичный файл в самой папке {downloads_label}; "
+                "отмеченные копии можно убрать.")
+    return (f"Идентичный файл остаётся в {vortex_label} — {in_vortex}, "
+            f"в самой папке {downloads_label} — {in_downloads} (по числу копий). "
+            f"Отмеченные копии можно убрать из {downloads_label}.")
+
+
 def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
                      archives: list[Archive], ai_map: Optional[dict[str, AIInfo]] = None,
                      installation_notes: Optional[dict[int, InstallationNote]] = None,
                      nexus_records: Optional[dict[int, NexusModRecord]] = None,
                      game_mods: Optional[list[GameModEntry]] = None,
-                     game_path: Optional[Path] = None) -> str:
+                     game_path: Optional[Path] = None,
+                     downloads: Optional[Path] = None,
+                     vortex: Optional[Path] = None) -> str:
     game_mods = game_mods or []
+    downloads_label = source_label("Downloads", downloads)
+    vortex_label = source_label("Vortex", vortex)
     n_exact = sum(1 for a in archives if a.verdict == EXACT_DUP)
     n_old = sum(1 for a in archives if a.verdict == OLDER)
     reclaim = sum(a.size for a in archives if a.verdict == EXACT_DUP)
@@ -1817,6 +1855,9 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
         "CORE_CARDS": cards,
         "FILTER_BUTTONS": buttons,
         "GAME_STATUS": _esc(game_status),
+        "DOWNLOADS_LABEL": _esc(downloads_label),
+        "VORTEX_LABEL": _esc(vortex_label),
+        "DUP_BANNER": _esc(duplicate_banner_text(archives, downloads_label, vortex_label)),
         "GAME_ROWS": "\n".join(render_game_mod_entry(entry) for entry in game_mods),
         "ROWS": "\n".join(
             render_row(r, index_of, ai_map, custom_blacklist, installation_notes, nexus_records)
@@ -1880,11 +1921,12 @@ def load_settings(args: argparse.Namespace) -> Settings:
 def _scan_archive_roots(
     downloads: Optional[Path],
     vortex: Optional[Path],
+    quarantine: Optional[Path] = None,
 ) -> tuple[list[Archive], int]:
     archives: list[Archive] = []
     scanned_folders = 0
     scan_labels = {"downloads": "Downloads", "vortex": "Vortex"}
-    for root in build_scan_plan(downloads, vortex):
+    for root in build_scan_plan(downloads, vortex, quarantine):
         label = scan_labels[root.source]
         folder = root.folder
         if root.warning:
@@ -1952,7 +1994,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
                   "(пример — config.example.json).")
         return 2
 
-    archives, scanned_folders = _scan_archive_roots(s.downloads, s.vortex)
+    archives, scanned_folders = _scan_archive_roots(s.downloads, s.vortex, s.quarantine)
     if not scanned_folders:
         log.error("Не найдена ни одна папка для сканирования. Проверьте downloads/vortex в config.json.")
         return 2
@@ -1974,7 +2016,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     s.out.write_text(
         render_dashboard(
             core, rows, archives, ai_map, installation_notes, nexus_records,
-            game_mods, s.game,
+            game_mods, s.game, downloads=s.downloads, vortex=s.vortex,
         ),
         encoding="utf-8",
     )

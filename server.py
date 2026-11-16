@@ -6,11 +6,12 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+from json_files import atomic_write_json
 
 PORT = 8000
 ROOT = Path(__file__).resolve().parent
@@ -176,27 +177,10 @@ def make_handler(
             else:
                 entries.pop(key, None)
 
-            temp_path: str | None = None
             try:
-                fd, temp_path = tempfile.mkstemp(
-                    prefix=".blacklist-",
-                    suffix=".tmp",
-                    dir=str(blacklist.parent),
-                )
-                with os.fdopen(fd, "w", encoding="utf-8") as blacklist_file:
-                    json.dump(entries, blacklist_file, ensure_ascii=False, indent=2)
-                    blacklist_file.write("\n")
-                os.replace(temp_path, blacklist)
+                atomic_write_json(blacklist, entries)
             except OSError as exc:
                 print(f"Не удалось сохранить blacklist.json: {exc}", file=sys.stderr)
-                if temp_path and os.path.exists(temp_path):
-                    try:
-                        os.remove(temp_path)
-                    except OSError as cleanup_exc:
-                        print(
-                            f"Не удалось удалить временный файл {temp_path}: {cleanup_exc}",
-                            file=sys.stderr,
-                        )
                 self.reply_json(500, "blacklist_write_failed")
                 return
             self.reply_json(200, "ok")
