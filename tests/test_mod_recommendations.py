@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 import urllib.error
 
 import nexus_links
-import mod_recommendations
-import openrouter_limits
+from modaudit import nexus as mod_recommendations
+from modaudit import limits as openrouter_limits
 
 
 class OpenRouterLimitTests(unittest.TestCase):
@@ -508,7 +508,7 @@ class InstallationNoteTests(unittest.TestCase):
                     mod_recommendations._record_from_page_payload(1234, payload)
 
         with patch(
-            "mod_recommendations.MAX_DESCRIPTION_BYTES",
+            "modaudit.nexus.MAX_DESCRIPTION_BYTES",
             1,
         ):
             with self.assertRaisesRegex(ValueError, "допустимый размер"):
@@ -584,7 +584,7 @@ class InstallationNoteTests(unittest.TestCase):
         response.__exit__.return_value = False
         response.read.return_value = b'{"data": {}}'
 
-        with patch("mod_recommendations.urllib.request.urlopen", return_value=response) as urlopen:
+        with patch("modaudit.nexus.urllib.request.urlopen", return_value=response) as urlopen:
             payload = mod_recommendations._request_mod_page(786)
 
         self.assertEqual(payload, b'{"data": {}}')
@@ -664,8 +664,8 @@ class InstallationNoteTests(unittest.TestCase):
                     "description": "INSTALLATION:<br>Drag and drop the archive folder."
                 }
             }).encode("utf-8")
-            with patch("mod_recommendations.urllib.request.urlopen", return_value=response) as urlopen:
-                with patch("mod_recommendations.time.sleep"):
+            with patch("modaudit.nexus.urllib.request.urlopen", return_value=response) as urlopen:
+                with patch("modaudit.nexus.time.sleep"):
                     notes = mod_recommendations.load_installation_notes({786}, cache_path, 1)
 
             self.assertEqual(notes[786].method, "manual")
@@ -678,7 +678,7 @@ class InstallationNoteTests(unittest.TestCase):
             )
             self.assertIsNone(request.get_header("Authorization"))
 
-            with patch("mod_recommendations.urllib.request.urlopen") as second_urlopen:
+            with patch("modaudit.nexus.urllib.request.urlopen") as second_urlopen:
                 cached_notes = mod_recommendations.load_installation_notes({786}, cache_path, 1)
 
         self.assertEqual(cached_notes[786].method, "manual")
@@ -701,10 +701,10 @@ class InstallationNoteTests(unittest.TestCase):
                 "data": {"description": "INSTALLATION: Copy files to the game folder."}
             }).encode("utf-8")
             with patch(
-                "mod_recommendations.urllib.request.urlopen",
+                "modaudit.nexus.urllib.request.urlopen",
                 side_effect=[denied, response],
             ) as urlopen:
-                with patch("mod_recommendations.time.sleep"):
+                with patch("modaudit.nexus.time.sleep"):
                     notes = mod_recommendations.load_installation_notes(
                         {20405, 20406},
                         cache_path,
@@ -717,7 +717,7 @@ class InstallationNoteTests(unittest.TestCase):
             self.assertEqual(notes[20406].method, "manual")
             self.assertEqual(json.loads(cache_path.read_text(encoding="utf-8"))["items"]["20405"]["error_code"], 403)
 
-            with patch("mod_recommendations.urllib.request.urlopen") as second_urlopen:
+            with patch("modaudit.nexus.urllib.request.urlopen") as second_urlopen:
                 cached_notes = mod_recommendations.load_installation_notes(
                     {20405, 20406},
                     cache_path,
@@ -759,7 +759,7 @@ class InstallationNoteTests(unittest.TestCase):
                     "tags": [{"name": "Overhaul"}],
                 }
             }).encode("utf-8")
-            with patch("mod_recommendations.urllib.request.urlopen", return_value=response) as urlopen:
+            with patch("modaudit.nexus.urllib.request.urlopen", return_value=response) as urlopen:
                 records = mod_recommendations.fetch_nexus_mod_records({1234}, cache_path, 1)
 
             self.assertEqual(records[1234].description, "Complete author page text.")
@@ -768,7 +768,7 @@ class InstallationNoteTests(unittest.TestCase):
             request = urlopen.call_args.args[0]
             self.assertIsNone(request.get_header("Authorization"))
 
-            with patch("mod_recommendations.urllib.request.urlopen") as second_urlopen:
+            with patch("modaudit.nexus.urllib.request.urlopen") as second_urlopen:
                 cached = mod_recommendations.fetch_nexus_mod_records({1234}, cache_path, 1)
 
         self.assertEqual(cached[1234].name, "Example overhaul")

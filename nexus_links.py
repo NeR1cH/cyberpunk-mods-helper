@@ -33,21 +33,28 @@ import time
 import webbrowser
 import zipfile
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Iterable, Optional
 import urllib.error
 import urllib.request
 from urllib.parse import quote, quote_plus
 
-from mod_categories import build_scan_plan, source_categories, summarize_sources
-from openrouter_limits import (
+from modaudit.hash_cache import HashCache
+from modaudit.json_files import atomic_write_json, preserve_corrupt_json
+from modaudit.sources import build_scan_plan, source_categories, summarize_sources
+from modaudit.limits import (
+    DAILY_REQUEST_BUDGET,
     block_remaining_requests_this_run,
+    budgets_from_config,
+    configure_budgets,
+    remaining_daily_requests,
+    requests_used_this_run,
     reserve_request,
     wait_for_request_slot,
 )
-from mod_recommendations import (
+from modaudit.nexus import (
     InstallationNote,
     NexusModRecord,
     ANALYSIS_BATCH_SIZE,
@@ -66,10 +73,15 @@ from mod_recommendations import (
 
 log = logging.getLogger("modaudit")
 
+# Единственное место, где задана версия: её показывают --version и подвал дашборда.
+# Суффикс .dev0 — код между выпусками; при релизе меняется на номер версии (см. CHANGELOG.md).
+__version__ = "1.3.0.dev0"
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = SCRIPT_DIR / "dashboard_template.html"
 CONFIG_PATH = SCRIPT_DIR / "config.json"
 BLACKLIST_PATH = SCRIPT_DIR / "blacklist.json"
+HASH_CACHE_PATH = SCRIPT_DIR / "mod_cache.json"
 
 GAME_NAME = "cyberpunk2077"
 EXTENSIONS = {".zip", ".rar", ".7z"}
@@ -85,12 +97,8 @@ CORE_FRAMEWORKS: dict[str, list[str]] = {
     "TweakXL": [r"red4ext\plugins\TweakXL\TweakXL.dll"],
     "Codeware": [r"red4ext\plugins\Codeware\Codeware.dll"],
     "Equipment-EX": [
-        r"red4ext\plugins\EquipmentEx\EquipmentEx.dll",
-        r"red4ext\plugins\Equipment-EX\Equipment-EX.dll",
-        r"red4ext\plugins\EquipmentEx",
-        r"red4ext\plugins\Equipment-EX",
-        r"r6\scripts\EquipmentEx",
-        r"r6\scripts\Equipment-EX",
+        r"archive\pc\mod\EquipmentEx.archive",
+        r"archive\pc\mod\EquipmentEx.archive.xl",
     ],
     "Mod Settings": [r"red4ext\plugins\mod_settings\mod_settings.dll"],
     "Native Settings UI": [r"bin\x64\plugins\cyber_engine_tweaks\mods\nativeSettings\init.lua"],
@@ -172,7 +180,25 @@ PRERELEASE_RANK = {"alpha": -3, "beta": -2, "pre": -2, "rc": -1}
 # это File ID, дата или чужой номер (например, «Виртуальная мастерская-168466.zip»), и ссылка
 # вида /mods/168466 даст 404. Потолок растёт вместе с Nexus: при необходимости задайте
 # "max_mod_id" в config.json.
-MAX_MOD_ID = 35000
+DEFAULT_MAX_MOD_ID = 35000
+MAX_MOD_ID = DEFAULT_MAX_MOD_ID
+
+
+def configured_max_mod_id(cfg: object) -> int:
+    """Потолок Mod ID из настроек; при отсутствии или неверном значении — по умолчанию."""
+    value = cfg.get("max_mod_id") if isinstance(cfg, dict) else None
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value
+    return DEFAULT_MAX_MOD_ID
+
+
+def set_max_mod_id(value: Optional[int] = None) -> None:
+    """Задать потолок Mod ID для процесса; без аргумента — вернуть значение по умолчанию.
+
+    Единственное место, где меняется глобальная MAX_MOD_ID (уйдёт в контекст в R01).
+    """
+    global MAX_MOD_ID
+    MAX_MOD_ID = DEFAULT_MAX_MOD_ID if value is None else value
 
 
 def is_valid_mod_id(n: Optional[int]) -> bool:
@@ -375,6 +401,7 @@ class Archive:
     verdict: str = KEEP
     note: str = ""
     keeper: Optional[int] = None   # id архива, который остаётся вместо этого
+    mtime_ns: int = 0              # точное время изменения для кэша хешей; 0 — неизвестно
 
     @property
     def name(self) -> str:
@@ -508,6 +535,7 @@ def scan_folder(folder: Path, source: str, start_id: int = 0,
             items.append(Archive(
                 id=start_id + len(items), source=source, path=Path(os.path.abspath(p)),
                 size=st.st_size, mtime=st.st_mtime, meta=extract_mod_meta(p.stem),
+                mtime_ns=st.st_mtime_ns,
             ))
     return items
 
@@ -520,10 +548,21 @@ def sha256_file(path: Path, chunk: int = 4 << 20) -> str:
     return h.hexdigest()
 
 
+def file_digests(path: Path, chunk: int = 4 << 20) -> tuple[str, str]:
+    """SHA-256 и MD5 за одно чтение файла. MD5 нужен для поиска файла на Nexus (N02)."""
+    sha256 = hashlib.sha256()
+    md5 = hashlib.md5(usedforsecurity=False)
+    with open(path, "rb") as f:
+        while block := f.read(chunk):
+            sha256.update(block)
+            md5.update(block)
+    return sha256.hexdigest(), md5.hexdigest()
+
+
 def check_game_core(game_path: Optional[Path]) -> dict[str, bool]:
     if game_path is None or not game_path.is_dir():
         return {}
-    return {name: any((game_path / rel).exists() for rel in rels)
+    return {name: any((game_path / PureWindowsPath(rel)).is_file() for rel in rels)
             for name, rels in CORE_FRAMEWORKS.items()}
 
 
@@ -571,29 +610,55 @@ def find_cyberpunk_install() -> Optional[Path]:
 
 # ==================== АНАЛИЗ ====================
 
-def mark_exact_duplicates(archives: list[Archive]) -> None:
+def _unchanged_since_scan(a: Archive) -> bool:
+    try:
+        st = a.path.stat()
+    except OSError:
+        return False
+    return st.st_size == a.size and st.st_mtime_ns == a.mtime_ns
+
+
+def mark_exact_duplicates(archives: list[Archive], hash_cache: Optional[HashCache] = None) -> None:
     """Точные копии: одинаковые размер и SHA-256, независимо от имён файлов.
 
     Хешируются только файлы, у которых есть «ровесник» по размеру.
     Файлы из Vortex никогда не становятся кандидатами на удаление.
+    С hash_cache файл с прежними размером и временем изменения заново не читается.
+    Перед очисткой SHA-256 всё равно пересчитывается по самому файлу (verify_entry).
     """
     by_size: dict[int, list[Archive]] = defaultdict(list)
     for a in archives:
         if a.size > 0:
             by_size[a.size].append(a)
     suspects = [a for group in by_size.values() if len(group) > 1 for a in group]
-    if suspects:
-        total = sum(a.size for a in suspects) / 1024 ** 3
+
+    to_hash: list[Archive] = []
+    for a in suspects:
+        cached = hash_cache.get(a.path, a.size, a.mtime_ns) if hash_cache and a.mtime_ns else None
+        if cached is not None:
+            a.sha256 = cached["sha256"]
+        else:
+            to_hash.append(a)
+    if suspects and hash_cache is not None:
+        log.info("[*] Файлов с одинаковым размером: %d, хеш взят из кэша для %d",
+                 len(suspects), len(suspects) - len(to_hash))
+    if to_hash:
+        total = sum(a.size for a in to_hash) / 1024 ** 3
         log.info("[*] Считаю SHA-256 для %d файлов с одинаковым размером (%.1f ГБ)...",
-                 len(suspects), total)
-    for n, a in enumerate(suspects, 1):
+                 len(to_hash), total)
+    for n, a in enumerate(to_hash, 1):
         try:
-            a.sha256 = sha256_file(a.path)
+            a.sha256, md5 = file_digests(a.path)
         except OSError as exc:
             log.warning("Не удалось прочитать %s: %s", a.path, exc)
             continue
+        # Если файл менялся, пока его читали, хеш к прежним размеру и времени не привязываем.
+        if hash_cache is not None and a.mtime_ns and _unchanged_since_scan(a):
+            hash_cache.put(a.path, a.size, a.mtime_ns, a.sha256, md5)
         if n % 20 == 0:
-            log.info("    %d / %d", n, len(suspects))
+            log.info("    %d / %d", n, len(to_hash))
+            if hash_cache is not None:
+                hash_cache.save()   # долгий подсчёт не пропадёт, если запуск прервут
 
     clusters: dict[tuple[int, str], list[Archive]] = defaultdict(list)
     for a in suspects:
@@ -863,8 +928,7 @@ def build_rows(archives: list[Archive], blacklist: dict[int, str],
             ModRow(mod_id, title, files, danger, status, actions, categories, grouping_reason)
         )
 
-    status_order = {"danger": 0, "dup": 1, "old": 2, "update": 3, "both": 4, "vortex": 5, "local": 6}
-    rows.sort(key=lambda r: (status_order[r.status], r.title.lower()))
+    rows.sort(key=lambda r: (STATUS_ORDER[r.status], r.title.lower()))
     return rows
 
 
@@ -916,9 +980,11 @@ def load_blacklist(path: Path = BLACKLIST_PATH) -> dict[int, str]:
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 AI_CACHE_PATH = SCRIPT_DIR / "ai_cache.json"
 # Бесплатные модели периодически меняются: актуальный список — `python nexus_links.py ai-models`.
+# Тот же список стоит в config.example.json (тест следит за совпадением). Бесплатные модели
+# меняются: актуальный список показывает `ai-models`, а `ai-models --write-config` записывает его.
 DEFAULT_AI_MODELS = [
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "nvidia/nemotron-3-nano-30b-a3b:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "google/gemma-4-31b-it:free",
 ]
 AI_BATCH_SIZE = 20          # модов в одном запросе
 AI_TIMEOUT = 120
@@ -1147,6 +1213,8 @@ def load_ai_cache(path: Path = AI_CACHE_PATH) -> dict[str, dict]:
         return {}
     except (OSError, ValueError) as exc:
         log.warning("[AI] кэш не прочитан (%s): %s", path, exc)
+        if isinstance(exc, ValueError):
+            preserve_corrupt_json(path)
         return {}
     try:
         items = raw.get("items", {})
@@ -1155,13 +1223,13 @@ def load_ai_cache(path: Path = AI_CACHE_PATH) -> dict[str, dict]:
     except AttributeError:
         pass
     log.warning("[AI] кэш имеет неверный формат (%s); начинаю с пустого кэша", path)
+    preserve_corrupt_json(path)
     return {}
 
 
 def save_ai_cache(items: dict[str, dict], path: Path = AI_CACHE_PATH) -> None:
     try:
-        path.write_text(json.dumps({"version": 1, "items": items}, ensure_ascii=False, indent=1),
-                        encoding="utf-8")
+        atomic_write_json(path, {"version": 1, "items": items}, indent=1)
     except OSError as exc:
         log.warning("[AI] кэш не сохранён (%s): %s", path, exc)
     else:
@@ -1279,6 +1347,66 @@ def _run_ai_batches(
         log.info("    получено и сохранено: %d из %d", got, len(batch))
 
 
+def _ai_config(settings: "Settings") -> dict:
+    cfg = settings.cfg or {}
+    ai_cfg = cfg.get("ai") if isinstance(cfg, dict) else None
+    return ai_cfg if isinstance(ai_cfg, dict) else {}
+
+
+def resolve_openrouter(settings: "Settings", args: argparse.Namespace) -> tuple[str, list[str]]:
+    """Ключ и модели OpenRouter для обоих ИИ-режимов.
+
+    Ключ: переменная среды OPENROUTER_API_KEY важнее config.json; заглушка из
+    примера («YOUR_…») считается отсутствующим ключом. Модели: --ai-model,
+    затем ai.models из config.json, затем DEFAULT_AI_MODELS.
+    """
+    ai_cfg = _ai_config(settings)
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    key = key or str(ai_cfg.get("api_key") or "").strip()
+    if key.upper().startswith(("YOUR_", "YOUR-")):
+        key = ""
+
+    configured_models = ai_cfg.get("models")
+    if not isinstance(configured_models, list) or not configured_models:
+        configured_models = DEFAULT_AI_MODELS
+    ai_model = getattr(args, "ai_model", None)
+    models_value = [ai_model] if ai_model else configured_models
+    return key, [str(model) for model in models_value if str(model).strip()]
+
+
+def apply_ai_budgets(settings: "Settings", args: argparse.Namespace, announce: bool = True) -> str:
+    """Применяет лимиты OpenRouter из настроек и описывает, сколько запросов разрешено.
+
+    Возвращает текст для лога; пустой, если ИИ в этом запуске не используется
+    (announce=False) или ключа нет и запросов всё равно не будет.
+    """
+    ai_cfg = _ai_config(settings)
+    daily_budget, per_run_budget = budgets_from_config(ai_cfg)
+    configure_budgets(daily_budget, per_run_budget)
+    if not announce:
+        return ""
+    key, _ = resolve_openrouter(settings, args)
+    if not key:
+        return ""
+
+    def source(name: str) -> str:
+        if name in ai_cfg:
+            return f"config.json: ai.{name}"
+        return "по умолчанию равен суточному" if name == "per_run_budget" else "по умолчанию"
+
+    shared = ("Лимит общий для распознавания названий и анализа страниц Nexus; "
+              "переключение на запасную модель тоже считается запросом.")
+    remaining = remaining_daily_requests()
+    if remaining is None:
+        return ("[AI] Не удалось прочитать счётчик запросов OpenRouter, поэтому новые запросы "
+                f"отправляться не будут. Лимит за запуск {per_run_budget} ({source('per_run_budget')}). "
+                + shared)
+    return (f"[AI] За этот запуск — не более {min(per_run_budget, remaining)} запросов к OpenRouter: "
+            f"лимит за запуск {per_run_budget} ({source('per_run_budget')}), "
+            f"на сегодня осталось {remaining} из {daily_budget} ({source('daily_budget')}). "
+            + shared)
+
+
 def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
            online: bool) -> dict[str, AIInfo]:
     """Возвращает {norm_title: AIInfo}. Без online — только то, что уже лежит в кэше."""
@@ -1288,11 +1416,9 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
         return result
 
     try:
-        cfg = settings.cfg or {}
-        ai_cfg = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
-        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-        key = key or str(ai_cfg.get("api_key") or "").strip()
-        if not key or key.upper().startswith(("YOUR_", "YOUR-")):
+        ai_cfg = _ai_config(settings)
+        key, models = resolve_openrouter(settings, args)
+        if not key:
             if args.ai_auto and not args.ai and not args.ai_all:
                 log.info("[AI] ключ OpenRouter не введён; запускаю сканирование без ИИ.")
             else:
@@ -1300,11 +1426,6 @@ def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
                             "или \"ai\": {\"api_key\": \"...\"} в config.json. Показываю только кэш.")
             return result
 
-        configured_models = ai_cfg.get("models")
-        if not isinstance(configured_models, list) or not configured_models:
-            configured_models = DEFAULT_AI_MODELS
-        models_value = [args.ai_model] if args.ai_model else configured_models
-        models = [str(model) for model in models_value if str(model).strip()]
         if not models:
             log.error("[AI] Список моделей OpenRouter пуст.")
             return result
@@ -1402,11 +1523,8 @@ def run_nexus_ai_analysis(
 ) -> dict[int, NexusModRecord]:
     mod_ids = {r.mod_id for r in rows if is_valid_mod_id(r.mod_id)}
     cache_path = SCRIPT_DIR / "nexus_analysis_cache.json"
-    cfg = settings.cfg or {}
-    ai_cfg = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
-    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    key = key or str(ai_cfg.get("api_key") or "").strip()
-    if not key or key.upper().startswith(("YOUR_", "YOUR-")):
+    key, models = resolve_openrouter(settings, args)
+    if not key:
         log.warning("[Nexus AI] Нет ключа OpenRouter; использую только сохранённый анализ.")
         return fetch_nexus_mod_records(mod_ids, cache_path, 0)
 
@@ -1432,11 +1550,6 @@ def run_nexus_ai_analysis(
         log.info("[Nexus AI] Все доступные страницы уже проанализированы или недоступны.")
         return records
 
-    configured_models = ai_cfg.get("models")
-    if not isinstance(configured_models, list) or not configured_models:
-        configured_models = DEFAULT_AI_MODELS
-    models_value = [args.ai_model] if args.ai_model else configured_models
-    models = [str(model) for model in models_value if str(model).strip()]
     if not models:
         log.error("[Nexus AI] Список моделей OpenRouter пуст.")
         return records
@@ -1468,6 +1581,44 @@ def cmd_ai_models(args: argparse.Namespace) -> int:
     log.info("Модели из списка будут пробоваться по порядку. При ошибке/лимите переключение "
              "на следующую модель происходит без ожидания; успешная модель станет первой для следующих пачек.")
     log.info("Лимиты всей учётной записи, например суточная квота, переключением модели не обходятся.")
+    if getattr(args, "write_config", False):
+        return _write_models_to_config(
+            [m["id"] for m in free], _as_path(getattr(args, "config", None)) or CONFIG_PATH)
+    return 0
+
+
+def _write_models_to_config(models: list[str], config_path: Path) -> int:
+    """Записывает ai.models в config.json — только после явного подтверждения."""
+    cfg: dict = {}
+    if config_path.is_file():
+        try:
+            loaded = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:
+            log.error("Не удалось прочитать %s: %s. Файл не изменён.", config_path, exc)
+            return 2
+        if not isinstance(loaded, dict):
+            log.error("В %s ожидается JSON-объект с настройками. Файл не изменён.", config_path)
+            return 2
+        cfg = loaded
+    ai_cfg = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
+    log.info("")
+    log.info("В %s изменится только список ai.models (остальные настройки и ключ остаются):", config_path)
+    log.info("  было:  %s", ai_cfg.get("models", "не задан"))
+    log.info("  будет: %s", models)
+    try:
+        answer = input("Записать? [y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    if answer not in ("y", "yes", "д", "да"):
+        log.info("Отменено, config.json не изменён.")
+        return 0
+    cfg["ai"] = {**ai_cfg, "models": models}
+    try:
+        atomic_write_json(config_path, cfg)
+    except OSError as exc:
+        log.error("Не удалось записать %s: %s", config_path, exc)
+        return 1
+    log.info("Список моделей записан в %s.", config_path)
     return 0
 
 
@@ -1738,13 +1889,48 @@ def _dashboard_file_data(
     return index_of, file_json
 
 
+def source_label(name: str, folder: Optional[Path]) -> str:
+    """Подпись источника с его настоящим диском: «Downloads (E:)», а не зашитые C: и D:."""
+    if folder is None:
+        return f"{name} (не задан)"
+    # PureWindowsPath разбирает путь одинаково на любой ОС; у пути без диска drive пустой.
+    drive = PureWindowsPath(str(folder)).drive
+    if len(drive) == 2:
+        drive = drive.upper()
+    return f"{name} ({drive})" if drive else name
+
+
+def duplicate_banner_text(archives: list[Archive], downloads_label: str, vortex_label: str) -> str:
+    """Где на самом деле остаётся файл, идентичный точным копиям (по keeper, а не по догадке)."""
+    by_id = {a.id: a for a in archives}
+    keepers = [by_id[a.keeper] for a in archives
+               if a.verdict == EXACT_DUP and a.keeper in by_id]
+    in_vortex = sum(1 for keeper in keepers if keeper.source == "vortex")
+    in_downloads = len(keepers) - in_vortex
+    if not keepers:
+        return "Точных копий не найдено."
+    if not in_downloads:
+        return (f"У каждой точной копии есть идентичный файл в {vortex_label}. "
+                f"Отмеченные копии можно убрать из {downloads_label}.")
+    if not in_vortex:
+        return (f"У каждой точной копии остаётся идентичный файл в самой папке {downloads_label}; "
+                "отмеченные копии можно убрать.")
+    return (f"Идентичный файл остаётся в {vortex_label} — {in_vortex}, "
+            f"в самой папке {downloads_label} — {in_downloads} (по числу копий). "
+            f"Отмеченные копии можно убрать из {downloads_label}.")
+
+
 def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
                      archives: list[Archive], ai_map: Optional[dict[str, AIInfo]] = None,
                      installation_notes: Optional[dict[int, InstallationNote]] = None,
                      nexus_records: Optional[dict[int, NexusModRecord]] = None,
                      game_mods: Optional[list[GameModEntry]] = None,
-                     game_path: Optional[Path] = None) -> str:
+                     game_path: Optional[Path] = None,
+                     downloads: Optional[Path] = None,
+                     vortex: Optional[Path] = None) -> str:
     game_mods = game_mods or []
+    downloads_label = source_label("Downloads", downloads)
+    vortex_label = source_label("Vortex", vortex)
     n_exact = sum(1 for a in archives if a.verdict == EXACT_DUP)
     n_old = sum(1 for a in archives if a.verdict == OLDER)
     reclaim = sum(a.size for a in archives if a.verdict == EXACT_DUP)
@@ -1813,16 +1999,22 @@ def render_dashboard(core_status: dict[str, bool], rows: list[ModRow],
     custom_blacklist = load_custom_blacklist()
     values = {
         "GENERATED": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "VERSION": _esc(__version__),
         "STATS": stats,
         "CORE_CARDS": cards,
         "FILTER_BUTTONS": buttons,
         "GAME_STATUS": _esc(game_status),
+        "DOWNLOADS_LABEL": _esc(downloads_label),
+        "VORTEX_LABEL": _esc(vortex_label),
+        "DUP_BANNER": _esc(duplicate_banner_text(archives, downloads_label, vortex_label)),
         "GAME_ROWS": "\n".join(render_game_mod_entry(entry) for entry in game_mods),
         "ROWS": "\n".join(
             render_row(r, index_of, ai_map, custom_blacklist, installation_notes, nexus_records)
             for r in rows
         ),
         "FILE_DATA": file_json,
+        # Встроенные ID чёрного списка: страница берёт их отсюда, а не из своей копии.
+        "PAGE_META": json.dumps({"builtin_blacklist": sorted(OUTDATED_OR_DANGEROUS)}),
     }
     return re.sub(r"@@([A-Z_]+)@@", lambda m: values[m.group(1)], template)
 
@@ -1845,24 +2037,23 @@ def _as_path(value: object) -> Optional[Path]:
     return Path(os.path.expandvars(os.path.expanduser(str(value))))
 
 
+class ConfigError(Exception):
+    """Файл настроек не читается или имеет неверный формат."""
+
+
 def load_settings(args: argparse.Namespace) -> Settings:
-    global MAX_MOD_ID
     cfg: dict = {}
     cfg_path = _as_path(getattr(args, "config", None)) or CONFIG_PATH
     if cfg_path.is_file():
         try:
             loaded_cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError) as exc:
-            log.error("Не удалось прочитать %s: %s", cfg_path, exc)
-            sys.exit(2)
+            raise ConfigError(f"Не удалось прочитать {cfg_path}: {exc}") from exc
         if not isinstance(loaded_cfg, dict):
-            log.error("В %s ожидается JSON-объект с настройками.", cfg_path)
-            sys.exit(2)
+            raise ConfigError(f"В {cfg_path} ожидается JSON-объект с настройками.")
         cfg = loaded_cfg
 
-    custom_max = cfg.get("max_mod_id")
-    if isinstance(custom_max, int) and not isinstance(custom_max, bool) and custom_max >= 1:
-        MAX_MOD_ID = custom_max
+    set_max_mod_id(configured_max_mod_id(cfg))
 
     downloads = _as_path(getattr(args, "downloads", None) or cfg.get("downloads"))
     vortex = _as_path(getattr(args, "vortex", None) or cfg.get("vortex"))
@@ -1880,11 +2071,12 @@ def load_settings(args: argparse.Namespace) -> Settings:
 def _scan_archive_roots(
     downloads: Optional[Path],
     vortex: Optional[Path],
+    quarantine: Optional[Path] = None,
 ) -> tuple[list[Archive], int]:
     archives: list[Archive] = []
     scanned_folders = 0
     scan_labels = {"downloads": "Downloads", "vortex": "Vortex"}
-    for root in build_scan_plan(downloads, vortex):
+    for root in build_scan_plan(downloads, vortex, quarantine):
         label = scan_labels[root.source]
         folder = root.folder
         if root.warning:
@@ -1900,7 +2092,7 @@ def _scan_archive_roots(
     return archives, scanned_folders
 
 
-def _prepare_scan_archives(archives: list[Archive]) -> None:
+def _prepare_scan_archives(archives: list[Archive], hash_cache: Optional[HashCache] = None) -> None:
     rejected = [a for a in archives if a.meta.rejected_id is not None]
     if rejected:
         log.info("[!] Отброшено ложных Mod ID (вне 1–%d): %d архивов — ссылки на них только через поиск/ИИ",
@@ -1908,7 +2100,7 @@ def _prepare_scan_archives(archives: list[Archive]) -> None:
         for a in rejected[:10]:
             log.info("    %s  (число %d)", a.name, a.meta.rejected_id)
 
-    mark_exact_duplicates(archives)
+    mark_exact_duplicates(archives, hash_cache)
     mark_versions(archives)
 
 
@@ -1945,36 +2137,85 @@ def _load_scan_nexus_data(
     return installation_notes, nexus_records
 
 
+MAX_AI_ROUNDS = 100   # предохранитель от бесконечного цикла; обычно раунды кончаются раньше
+
+
+def _ai_round_state(ai_map: dict, nexus_records: dict) -> tuple[int, int, int, int]:
+    """Снимок прогресса ИИ: если после раунда он не изменился, работы больше нет."""
+    analyzed = sum(1 for record in nexus_records.values()
+                   if getattr(record, "recommendation", None) is not None)
+    return requests_used_this_run(), len(ai_map), len(nexus_records), analyzed
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
-    s = load_settings(args)
+    try:
+        s = load_settings(args)
+    except ConfigError as exc:
+        log.error("%s", exc)
+        return 2
     if not (s.downloads or s.vortex):
         log.error("Не заданы папки. Укажите --downloads/--vortex или заполните config.json "
                   "(пример — config.example.json).")
         return 2
 
-    archives, scanned_folders = _scan_archive_roots(s.downloads, s.vortex)
+    archives, scanned_folders = _scan_archive_roots(s.downloads, s.vortex, s.quarantine)
     if not scanned_folders:
         log.error("Не найдена ни одна папка для сканирования. Проверьте downloads/vortex в config.json.")
         return 2
 
-    _prepare_scan_archives(archives)
+    hash_cache = HashCache.load(HASH_CACHE_PATH)
+    _prepare_scan_archives(archives, hash_cache)
+    scanned_roots = [os.path.realpath(folder) for folder in (s.downloads, s.vortex)
+                     if folder is not None and folder.is_dir()]
+    hash_cache.prune(scanned_roots, [a.path for a in archives])
+    hash_cache.save()
     blacklist = load_blacklist()
-    rows = build_rows(archives, blacklist)
+    base_rows = build_rows(archives, blacklist)
     core = check_game_core(s.game)
     game_mods = scan_game_mods(s.game)
     log.info("[*] Найдено элементов в известных папках модов игры: %d", len(game_mods))
     # Без AI-флагов подтягивается только кэш (ai_cache.json), сеть не используется.
-    ai_map = run_ai(rows, s, args, online=bool(args.ai or args.ai_all or args.ai_auto))
-    # Английские названия от ИИ тоже сверяются со словарём; при совпадении строки пересобираются.
-    rows = _apply_ai_known_ids(archives, blacklist, rows, ai_map)
-
-    installation_notes, nexus_records = _load_scan_nexus_data(rows, s, args)
+    ai_online = bool(args.ai or args.ai_all or args.ai_auto)
+    ai_requested = ai_online or bool(args.nexus_analyze)
+    budget_note = apply_ai_budgets(s, args, announce=ai_requested)
+    if budget_note:
+        log.info(budget_note)
+    # Один раунд — то же, что раньше делал один запуск: пачки названий и анализ страниц Nexus.
+    # С --ai-until-budget раунды повторяются в этом же процессе, без нового обхода дисков.
+    # Без ключа OpenRouter запросов не будет, поэтому хватит одного раунда.
+    until_budget = (bool(getattr(args, "ai_until_budget", False)) and ai_requested
+                    and bool(resolve_openrouter(s, args)[0]))
+    round_no = 0
+    previous_state: Optional[tuple[int, int, int, int]] = None
+    while True:
+        round_no += 1
+        ai_map = run_ai(base_rows, s, args, online=ai_online)
+        # Английские названия от ИИ тоже сверяются со словарём; при совпадении строки пересобираются.
+        rows = _apply_ai_known_ids(archives, blacklist, base_rows, ai_map)
+        installation_notes, nexus_records = _load_scan_nexus_data(rows, s, args)
+        if not until_budget:
+            break
+        state = _ai_round_state(ai_map, nexus_records)
+        if state == previous_state:
+            log.info("[*] ИИ: новой работы нет, раундов выполнено: %d", round_no)
+            break
+        previous_state = state
+        if round_no >= MAX_AI_ROUNDS:
+            log.info("[*] ИИ: достигнут предел раундов за запуск (%d)", MAX_AI_ROUNDS)
+            break
+        remaining = remaining_daily_requests()
+        if not remaining:   # 0 — лимит исчерпан, None — счётчик не читается
+            log.info("[*] ИИ: суточный лимит запросов исчерпан или недоступен, раундов выполнено: %d",
+                     round_no)
+            break
+        log.info("[*] ИИ: раунд %d завершён, осталось запросов на сегодня: %d. Следующий раунд…",
+                 round_no, remaining)
 
     s.out.parent.mkdir(parents=True, exist_ok=True)
     s.out.write_text(
         render_dashboard(
             core, rows, archives, ai_map, installation_notes, nexus_records,
-            game_mods, s.game,
+            game_mods, s.game, downloads=s.downloads, vortex=s.vortex,
         ),
         encoding="utf-8",
     )
@@ -2070,6 +2311,26 @@ def verify_entry(
     return None
 
 
+def iter_clean_checks(
+    entries: Iterable[object],
+    downloads: Path,
+    quarantine: Path,
+    verify_hash: bool = True,
+) -> Iterable[tuple[object, Optional[str]]]:
+    """Проверяет записи списка очистки по одной: (запись, причина пропуска или None)."""
+    for entry in entries:
+        yield entry, verify_entry(entry, downloads, quarantine, verify_hash=verify_hash)
+
+
+@dataclass
+class CleanOutcome:
+    """Что сделал _apply_clean_plan — чтобы дашборд показал результат, а не только код выхода."""
+    moved: list[tuple[str, str]] = field(default_factory=list)    # (откуда, куда); для Корзины «куда» пустое
+    failed: list[tuple[str, str]] = field(default_factory=list)   # (файл, текст ошибки)
+    run_dir: Optional[Path] = None
+    log_path: Optional[Path] = None
+
+
 def _load_clean_selection(path: Path) -> list[dict]:
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(data, dict) or not isinstance(data.get("files"), list):
@@ -2080,8 +2341,14 @@ def _load_clean_selection(path: Path) -> list[dict]:
     return entries
 
 
-def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str) -> int:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str,
+                      outcome: Optional[CleanOutcome] = None) -> int:
+    started = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp, attempt = started, 1
+    # Два запуска в одну секунду не должны делить папку и затирать журнал друг друга.
+    while (quarantine / stamp).exists() or (quarantine / f"clean_{stamp}.log").exists():
+        attempt += 1
+        stamp = f"{started}_{attempt}"
     run_dir = quarantine / stamp
     trash = None
     if mode == "trash":
@@ -2096,6 +2363,9 @@ def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str) -> int:
 
     log_path = (run_dir if mode != "trash" else quarantine) / f"clean_{stamp}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    if outcome is not None:
+        outcome.run_dir = None if trash else run_dir
+        outcome.log_path = log_path
     moved = 0
     with open(log_path, "w", encoding="utf-8") as lf:
         for entry in plan:
@@ -2104,6 +2374,7 @@ def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str) -> int:
                 if trash:
                     trash(str(src))
                     lf.write(f"TRASH\t{src}\n")
+                    dest_text = ""
                 else:
                     dest = run_dir / src.name
                     n = 1
@@ -2112,17 +2383,26 @@ def _apply_clean_plan(plan: list[dict], quarantine: Path, mode: str) -> int:
                         n += 1
                     shutil.move(str(src), str(dest))
                     lf.write(f"MOVE\t{src}\t{dest}\n")
+                    dest_text = str(dest)
                 moved += 1
+                if outcome is not None:
+                    outcome.moved.append((entry["path"], dest_text))
             except OSError as exc:
                 log.error("Не удалось обработать %s: %s", src, exc)
                 lf.write(f"FAIL\t{src}\t{exc}\n")
+                if outcome is not None:
+                    outcome.failed.append((entry["path"], str(exc)))
     where = "в Корзину" if trash else f"в {run_dir}"
     log.info("Готово: обработано %d из %d файлов (%s). Журнал: %s", moved, len(plan), where, log_path)
     return 0 if moved == len(plan) else 1
 
 
 def cmd_clean(args: argparse.Namespace) -> int:
-    s = load_settings(args)
+    try:
+        s = load_settings(args)
+    except ConfigError as exc:
+        log.error("%s", exc)
+        return 2
     if s.downloads is None:
         log.error("Для очистки нужна папка Downloads (--downloads или config.json): "
                   "файлы вне её трогать нельзя.")
@@ -2134,8 +2414,8 @@ def cmd_clean(args: argparse.Namespace) -> int:
         return 2
 
     plan: list[dict] = []
-    for e in entries:
-        problem = verify_entry(e, s.downloads, s.quarantine, verify_hash=not args.no_verify)
+    for e, problem in iter_clean_checks(entries, s.downloads, s.quarantine,
+                                        verify_hash=not args.no_verify):
         if problem:
             log.warning("[ПРОПУСК] %s — %s", e.get("path"), problem)
         else:
@@ -2174,6 +2454,8 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--quarantine", help=f"папка карантина (по умолчанию <downloads>\\{QUARANTINE_DIRNAME})")
 
     parser = argparse.ArgumentParser(description="Cyberpunk 2077 Mod Auditor")
+    parser.add_argument("--version", action="version",
+                        version=f"Cyberpunk 2077 Mod Auditor {__version__}")
     sub = parser.add_subparsers(dest="cmd")
 
     p_scan = sub.add_parser("scan", parents=[common], help="собрать дашборд (по умолчанию)")
@@ -2187,7 +2469,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--ai-refresh", action="store_true", help="игнорировать кэш ИИ и спросить заново")
     p_scan.add_argument("--ai-model", help="id модели OpenRouter (по умолчанию — бесплатные NVIDIA Nemotron)")
     p_scan.add_argument("--ai-max-requests", type=nonnegative_int, default=None,
-                        help=f"максимум запросов за запуск (по умолчанию {AI_DEFAULT_MAX_REQUESTS})")
+                        help="максимум пачек распознавания названий за раунд; важнее ai.max_requests "
+                             f"из config.json (по умолчанию {AI_DEFAULT_MAX_REQUESTS}). Запросов к OpenRouter "
+                             "всё равно не больше ai.daily_budget за UTC-сутки "
+                             f"(по умолчанию {DAILY_REQUEST_BUDGET}) и ai.per_run_budget за запуск "
+                             "(по умолчанию равен суточному); эти лимиты общие с --nexus-analyze, "
+                             "а переключение на запасную модель тоже тратит запрос")
+    p_scan.add_argument("--ai-until-budget", action="store_true",
+                        help="повторять раунды ИИ (названия и анализ страниц Nexus) в одном запуске, "
+                             "пока не кончится лимит запросов или работа; --ai-max-requests, "
+                             "--nexus-ai-max-mods и --nexus-max-requests задают размер одного раунда. "
+                             "Папки сканируются и отчёт создаётся один раз")
     p_scan.add_argument("--nexus-details", action="store_true",
                         help="получить с Nexus подсказки автора по установке (опционально, без ключа API)")
     p_scan.add_argument("--nexus-max-requests", type=nonnegative_int, default=20,
@@ -2199,6 +2491,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.set_defaults(func=cmd_scan)
 
     p_models = sub.add_parser("ai-models", help="показать бесплатные модели OpenRouter")
+    p_models.add_argument("--config", help="путь к config.json (по умолчанию — рядом со скриптом)")
+    p_models.add_argument("--write-config", action="store_true",
+                          help="после подтверждения записать показанный список в ai.models файла config.json")
     p_models.set_defaults(func=cmd_ai_models)
 
     p_clean = sub.add_parser("clean", parents=[common], help="применить список очистки из дашборда")
@@ -2221,7 +2516,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or argv[0] not in ("scan", "clean", "ai-models", "-h", "--help"):
+    if not argv or argv[0] not in ("scan", "clean", "ai-models", "-h", "--help", "--version"):
         argv.insert(0, "scan")   # `python nexus_links.py --downloads X` = scan
     args = build_parser().parse_args(argv)
     return args.func(args)

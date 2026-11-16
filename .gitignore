@@ -21,3 +21,10 @@ __pycache__/
 env/
 .vscode/*
 !.vscode/settings.json
+
+# Временные файлы атомарной записи и сохранённые повреждённые кэши
+*.tmp
+*.corrupt-*.json
+
+# Таблица «имя → модуль», которую пишет tools/r01_split.py
+tools/r01_where.json
