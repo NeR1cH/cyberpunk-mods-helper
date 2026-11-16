@@ -5,6 +5,8 @@
   "out": "mod_audit_dashboard.html",
   "ai": {
     "api_key": "YOUR_OPENROUTER_API_KEY",
+    "daily_budget": 10,
+    "per_run_budget": 2,
     "models": [
       "nvidia/nemotron-3.5-lightning:free",
       "google/gemma-4-31b-it:free"

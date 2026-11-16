@@ -149,7 +149,11 @@ class ResolveOpenRouterTests(unittest.TestCase):
         source = (PROJECT_ROOT / "nexus_links.py").read_text(encoding="utf-8")
 
         self.assertEqual(source.count('os.environ.get("OPENROUTER_API_KEY"'), 1)
-        self.assertEqual(source.count("resolve_openrouter(settings, args)"), 2)
+        for function in ("run_ai", "run_nexus_ai_analysis"):
+            body = source[source.index(f"def {function}("):]
+            body = body[:body.index("\ndef ", 1)]
+            with self.subTest(function=function):
+                self.assertIn("resolve_openrouter(settings, args)", body)
 
 
 class ServerUsesCoreConstantsTests(unittest.TestCase):

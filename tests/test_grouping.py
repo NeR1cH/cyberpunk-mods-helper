@@ -90,6 +90,7 @@ class GroupingTests(unittest.TestCase):
                 patch("nexus_links.check_game_core", return_value={}),
                 patch("nexus_links.scan_game_mods", return_value=[]),
                 patch("nexus_links.run_ai", return_value=ai_map) as run_ai,
+                patch("nexus_links.remaining_daily_requests", return_value=10),
                 patch("nexus_links.run_nexus_ai_analysis", return_value={}) as analyze,
                 patch("nexus_links.load_installation_notes") as load_notes,
                 patch("nexus_links.render_dashboard", return_value="Дашборд") as render,

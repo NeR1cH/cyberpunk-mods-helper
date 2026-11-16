@@ -44,7 +44,12 @@ from urllib.parse import quote, quote_plus
 from json_files import atomic_write_json, preserve_corrupt_json
 from mod_categories import build_scan_plan, source_categories, summarize_sources
 from openrouter_limits import (
+    DAILY_REQUEST_BUDGET,
+    PER_RUN_REQUEST_BUDGET,
     block_remaining_requests_this_run,
+    budgets_from_config,
+    configure_budgets,
+    remaining_daily_requests,
     reserve_request,
     wait_for_request_slot,
 )
@@ -1326,6 +1331,37 @@ def resolve_openrouter(settings: "Settings", args: argparse.Namespace) -> tuple[
     return key, [str(model) for model in models_value if str(model).strip()]
 
 
+def apply_ai_budgets(settings: "Settings", args: argparse.Namespace, announce: bool = True) -> str:
+    """Применяет лимиты OpenRouter из настроек и описывает, сколько запросов разрешено.
+
+    Возвращает текст для лога; пустой, если ИИ в этом запуске не используется
+    (announce=False) или ключа нет и запросов всё равно не будет.
+    """
+    ai_cfg = _ai_config(settings)
+    daily_budget, per_run_budget = budgets_from_config(ai_cfg)
+    configure_budgets(daily_budget, per_run_budget)
+    if not announce:
+        return ""
+    key, _ = resolve_openrouter(settings, args)
+    if not key:
+        return ""
+
+    def source(name: str) -> str:
+        return f"config.json: ai.{name}" if name in ai_cfg else "по умолчанию"
+
+    shared = ("Лимит общий для распознавания названий и анализа страниц Nexus; "
+              "переключение на запасную модель тоже считается запросом.")
+    remaining = remaining_daily_requests()
+    if remaining is None:
+        return ("[AI] Не удалось прочитать счётчик запросов OpenRouter, поэтому новые запросы "
+                f"отправляться не будут. Лимит за запуск {per_run_budget} ({source('per_run_budget')}). "
+                + shared)
+    return (f"[AI] За этот запуск — не более {min(per_run_budget, remaining)} запросов к OpenRouter: "
+            f"лимит за запуск {per_run_budget} ({source('per_run_budget')}), "
+            f"на сегодня осталось {remaining} из {daily_budget} ({source('daily_budget')}). "
+            + shared)
+
+
 def run_ai(rows: list[ModRow], settings: "Settings", args: argparse.Namespace,
            online: bool) -> dict[str, AIInfo]:
     """Возвращает {norm_title: AIInfo}. Без online — только то, что уже лежит в кэше."""
@@ -2040,7 +2076,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
     game_mods = scan_game_mods(s.game)
     log.info("[*] Найдено элементов в известных папках модов игры: %d", len(game_mods))
     # Без AI-флагов подтягивается только кэш (ai_cache.json), сеть не используется.
-    ai_map = run_ai(rows, s, args, online=bool(args.ai or args.ai_all or args.ai_auto))
+    ai_online = bool(args.ai or args.ai_all or args.ai_auto)
+    budget_note = apply_ai_budgets(s, args, announce=ai_online or args.nexus_analyze)
+    if budget_note:
+        log.info(budget_note)
+    ai_map = run_ai(rows, s, args, online=ai_online)
     # Английские названия от ИИ тоже сверяются со словарём; при совпадении строки пересобираются.
     rows = _apply_ai_known_ids(archives, blacklist, rows, ai_map)
 
@@ -2302,7 +2342,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--ai-refresh", action="store_true", help="игнорировать кэш ИИ и спросить заново")
     p_scan.add_argument("--ai-model", help="id модели OpenRouter (по умолчанию — бесплатные NVIDIA Nemotron)")
     p_scan.add_argument("--ai-max-requests", type=nonnegative_int, default=None,
-                        help=f"максимум запросов за запуск (по умолчанию {AI_DEFAULT_MAX_REQUESTS})")
+                        help="максимум пачек распознавания названий за запуск; важнее ai.max_requests "
+                             f"из config.json (по умолчанию {AI_DEFAULT_MAX_REQUESTS}). Запросов к OpenRouter "
+                             "всё равно не больше ai.per_run_budget за запуск "
+                             f"(по умолчанию {PER_RUN_REQUEST_BUDGET}) и ai.daily_budget за UTC-сутки "
+                             f"(по умолчанию {DAILY_REQUEST_BUDGET}); эти лимиты общие с --nexus-analyze, "
+                             "а переключение на запасную модель тоже тратит запрос")
     p_scan.add_argument("--nexus-details", action="store_true",
                         help="получить с Nexus подсказки автора по установке (опционально, без ключа API)")
     p_scan.add_argument("--nexus-max-requests", type=nonnegative_int, default=20,
