@@ -12,6 +12,8 @@ import threading
 import time
 from typing import Generator
 
+from json_files import atomic_write_json
+
 log = logging.getLogger("modaudit")
 
 DAILY_REQUEST_BUDGET = 10
@@ -175,19 +177,10 @@ def _reserve_daily_slot(path: Path, daily_budget: int) -> bool:
         )
         return False
 
-    temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
-        temp_path.write_text(
-            json.dumps({"date": today, "requests": used + 1}, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(temp_path, path)
+        atomic_write_json(path, {"date": today, "requests": used + 1})
     except OSError as exc:
         log.error("[AI] Не удалось обновить счётчик лимита OpenRouter (%s): %s", path, exc)
-        try:
-            temp_path.unlink(missing_ok=True)
-        except OSError:
-            log.warning("[AI] Не удалось удалить временный файл счётчика: %s", temp_path)
         return False
     _requests_this_process += 1
     return True
