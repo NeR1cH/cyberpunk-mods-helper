@@ -175,7 +175,9 @@ class ScanUsesHashCacheTests(unittest.TestCase):
 
         def digests_then_touch(path: Path) -> tuple[str, str]:
             result = real_digests(path)
-            if Path(path) == target:
+            # По имени: на Windows один и тот же файл может прийти и с коротким (RUNNER~1),
+            # и с длинным путём, и сравнение путей целиком не совпадёт.
+            if Path(path).name == target.name:
                 stat = target.stat()
                 os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
             return result
