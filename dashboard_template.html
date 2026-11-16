@@ -477,10 +477,10 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     </header>
     <div class="ticker" aria-hidden="true"><div class="ticker-in" id="ticker"></div></div>
 
-    <section class="disk" aria-label="Занятое место архивами">
+    <section class="disk" id="diskUsage" aria-label="Занятое место архивами" data-downloads-label="@@DOWNLOADS_LABEL@@" data-vortex-label="@@VORTEX_LABEL@@">
         <div class="disk-figures">
-            <div><div class="fig-val fig-c" id="diskC">—</div><div class="fig-cap">Downloads, диск C:</div></div>
-            <div><div class="fig-val fig-d" id="diskD">—</div><div class="fig-cap">Vortex, диск D:</div></div>
+            <div><div class="fig-val fig-c" id="diskC">—</div><div class="fig-cap">@@DOWNLOADS_LABEL@@</div></div>
+            <div><div class="fig-val fig-d" id="diskD">—</div><div class="fig-cap">@@VORTEX_LABEL@@</div></div>
             <div><div class="fig-val fig-dup" id="diskDup">—</div><div class="fig-cap">Из них точные дубликаты в Downloads</div></div>
         </div>
         <div class="disk-bar" role="img" aria-label="Соотношение архивов в Downloads и Vortex">
@@ -499,9 +499,9 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
 
     <div id="dupBanner" class="dup-banner">
         <div class="dup-banner-text">
-            ⚡ <strong>Вкладка дубликатов.</strong> Найденные точные копии уже присутствуют в Vortex (диск D:). Их можно безопасно удалить из Downloads (диск C:).
+            ⚡ <strong>Точные копии.</strong> @@DUP_BANNER@@ Старые версии по умолчанию не отмечены: они определены по имени файла, а не по содержимому.
         </div>
-        <div class="savings-pill" id="savingsPill">Очистка дубликатов освободит: 0.0 ГБ на диске C:</div>
+        <div class="savings-pill" id="savingsPill">Очистка дубликатов освободит: —</div>
         <div class="selection-pill" id="selectionPill" role="status" aria-live="polite">Выбрано: 0</div>
         <div class="dup-actions">
             <button type="button" class="btn" id="btnSelectDups">Выбрать все копии</button>
@@ -524,8 +524,8 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
                     <th data-sort="name" tabindex="0" style="width: 260px;">Название мода<span class="sort-arrow"></span><div class="col-resizer"></div></th>
                     <th style="width: 90px;">Ссылка<div class="col-resizer"></div></th>
                     <th style="width: 240px;">Рекомендация<div class="col-resizer"></div></th>
-                    <th data-sort="size" tabindex="0" style="width: 380px;">В Downloads (C:)<span class="sort-arrow"></span><div class="col-resizer"></div></th>
-                    <th data-sort="size" tabindex="0" style="width: 380px;">В Vortex (D:)<span class="sort-arrow"></span><div class="col-resizer"></div></th>
+                    <th data-sort="size" tabindex="0" style="width: 380px;">В @@DOWNLOADS_LABEL@@<span class="sort-arrow"></span><div class="col-resizer"></div></th>
+                    <th data-sort="size" tabindex="0" style="width: 380px;">В @@VORTEX_LABEL@@<span class="sort-arrow"></span><div class="col-resizer"></div></th>
                 </tr>
             </thead>
             <tbody>
@@ -574,6 +574,9 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     const gameModsContainer = $('#gameModsContainer');
     const gameModsTbody = $('#gameModsTable tbody');
     const isDupInDownloads = (f) => f.s === 'downloads' && f.vd === 'exact_dup';
+    // Подписи источников с настоящими дисками приходят из Python (data-атрибуты).
+    const downloadsLabel = $('#diskUsage').getAttribute('data-downloads-label') || 'Downloads';
+    const vortexLabel = $('#diskUsage').getAttribute('data-vortex-label') || 'Vortex';
     // Что чистить, решают отмеченные галочки (data-fid), а не вердикт файла.
     const selectedIds = new Set();
     const isCandidate = (f) => f.s === 'downloads' && (f.vd === 'exact_dup' || f.vd === 'older');
@@ -645,7 +648,7 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
         $('#segKeep').style.width = ((c - dup) / total * 100) + '%';
         $('#segDup').style.width = (dup / total * 100) + '%';
         $('#segVx').style.width = (d / total * 100) + '%';
-        $('#savingsPill').textContent = 'Очистка дубликатов освободит: ' + fmtSize(dup) + ' на диске C:';
+        $('#savingsPill').textContent = 'Очистка дубликатов освободит: ' + fmtSize(dup) + ' в ' + downloadsLabel;
     }
     requestAnimationFrame(() => requestAnimationFrame(updateDisk));
 
@@ -1059,7 +1062,7 @@ tbody tr:hover td{background:rgba(0,240,255,.08)}
     const tk=document.getElementById('ticker');
     try{
         const f=fileData,dups=f.filter(x=>x.s==='downloads'&&x.vd==='exact_dup'),sz=a=>fmtSize(a.reduce((t,x)=>t+(Number(x.z)||0),0));
-        const t=['▌ ИНДЕКС: '+f.length+' ФАЙЛОВ','DOWNLOADS C: '+sz(f.filter(x=>x.s==='downloads')),'VORTEX D: '+sz(f.filter(x=>x.s!=='downloads')),'ICE: '+dups.length+' ТОЧНЫХ КОПИЙ // '+sz(dups)+' К ОЧИСТКЕ','NEURAL LINK STABLE','NO DATA LEAKS DETECTED'].join('   ///   ');
+        const t=['▌ ИНДЕКС: '+f.length+' ФАЙЛОВ',downloadsLabel.toUpperCase()+' — '+sz(f.filter(x=>x.s==='downloads')),vortexLabel.toUpperCase()+' — '+sz(f.filter(x=>x.s!=='downloads')),'ICE: '+dups.length+' ТОЧНЫХ КОПИЙ // '+sz(dups)+' К ОЧИСТКЕ','NEURAL LINK STABLE','NO DATA LEAKS DETECTED'].join('   ///   ');
         if(tk)tk.textContent=t+'   ///   '+t;
     }catch(e){}
 
