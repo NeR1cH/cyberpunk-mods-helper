@@ -17,8 +17,10 @@ from json_files import atomic_write_json
 log = logging.getLogger("modaudit")
 
 # Значения по умолчанию; меняются настройками ai.daily_budget и ai.per_run_budget в config.json.
+# Один запуск теперь проходит все раунды ИИ сам (scan --ai-until-budget), поэтому лимит
+# «за запуск», если он не задан, равен суточному.
 DAILY_REQUEST_BUDGET = 10
-PER_RUN_REQUEST_BUDGET = 2
+PER_RUN_REQUEST_BUDGET = DAILY_REQUEST_BUDGET
 MIN_REQUEST_INTERVAL_SECONDS = 3.5
 USAGE_PATH = Path(__file__).resolve().parent / "openrouter_usage.json"
 ANALYSIS_CACHE_PATH = Path(__file__).resolve().parent / "nexus_analysis_cache.json"
@@ -44,17 +46,15 @@ def _budget_from(ai_cfg: dict, name: str, default: int) -> int:
 def budgets_from_config(ai_cfg: object) -> tuple[int, int]:
     """(суточный лимит, лимит за запуск) из раздела "ai" настроек; неверное заменяется умолчанием."""
     section = ai_cfg if isinstance(ai_cfg, dict) else {}
-    return (
-        _budget_from(section, "daily_budget", DAILY_REQUEST_BUDGET),
-        _budget_from(section, "per_run_budget", PER_RUN_REQUEST_BUDGET),
-    )
+    daily = _budget_from(section, "daily_budget", DAILY_REQUEST_BUDGET)
+    return daily, _budget_from(section, "per_run_budget", daily)
 
 
 def configure_budgets(daily: int | None = None, per_run: int | None = None) -> None:
     """Задать лимиты для процесса; без аргументов — вернуть значения по умолчанию."""
     global _daily_budget, _per_run_budget
     daily = DAILY_REQUEST_BUDGET if daily is None else daily
-    per_run = PER_RUN_REQUEST_BUDGET if per_run is None else per_run
+    per_run = daily if per_run is None else per_run
     if daily < 0 or per_run < 0:
         raise ValueError("request budgets must not be negative")
     with _reservation_lock:
@@ -64,6 +64,11 @@ def configure_budgets(daily: int | None = None, per_run: int | None = None) -> N
 def current_budgets() -> tuple[int, int]:
     """Действующие (суточный лимит, лимит за запуск)."""
     return _daily_budget, _per_run_budget
+
+
+def requests_used_this_run() -> int:
+    """Сколько запросов уже зачтено этому процессу."""
+    return _requests_this_process
 
 
 @contextmanager

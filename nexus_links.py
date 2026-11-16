@@ -41,15 +41,16 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote, quote_plus
 
+from hash_cache import HashCache
 from json_files import atomic_write_json, preserve_corrupt_json
 from mod_categories import build_scan_plan, source_categories, summarize_sources
 from openrouter_limits import (
     DAILY_REQUEST_BUDGET,
-    PER_RUN_REQUEST_BUDGET,
     block_remaining_requests_this_run,
     budgets_from_config,
     configure_budgets,
     remaining_daily_requests,
+    requests_used_this_run,
     reserve_request,
     wait_for_request_slot,
 )
@@ -76,6 +77,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = SCRIPT_DIR / "dashboard_template.html"
 CONFIG_PATH = SCRIPT_DIR / "config.json"
 BLACKLIST_PATH = SCRIPT_DIR / "blacklist.json"
+HASH_CACHE_PATH = SCRIPT_DIR / "mod_cache.json"
 
 GAME_NAME = "cyberpunk2077"
 EXTENSIONS = {".zip", ".rar", ".7z"}
@@ -399,6 +401,7 @@ class Archive:
     verdict: str = KEEP
     note: str = ""
     keeper: Optional[int] = None   # id архива, который остаётся вместо этого
+    mtime_ns: int = 0              # точное время изменения для кэша хешей; 0 — неизвестно
 
     @property
     def name(self) -> str:
@@ -532,6 +535,7 @@ def scan_folder(folder: Path, source: str, start_id: int = 0,
             items.append(Archive(
                 id=start_id + len(items), source=source, path=Path(os.path.abspath(p)),
                 size=st.st_size, mtime=st.st_mtime, meta=extract_mod_meta(p.stem),
+                mtime_ns=st.st_mtime_ns,
             ))
     return items
 
@@ -542,6 +546,17 @@ def sha256_file(path: Path, chunk: int = 4 << 20) -> str:
         while block := f.read(chunk):
             h.update(block)
     return h.hexdigest()
+
+
+def file_digests(path: Path, chunk: int = 4 << 20) -> tuple[str, str]:
+    """SHA-256 и MD5 за одно чтение файла. MD5 нужен для поиска файла на Nexus (N02)."""
+    sha256 = hashlib.sha256()
+    md5 = hashlib.md5(usedforsecurity=False)
+    with open(path, "rb") as f:
+        while block := f.read(chunk):
+            sha256.update(block)
+            md5.update(block)
+    return sha256.hexdigest(), md5.hexdigest()
 
 
 def check_game_core(game_path: Optional[Path]) -> dict[str, bool]:
@@ -595,29 +610,55 @@ def find_cyberpunk_install() -> Optional[Path]:
 
 # ==================== АНАЛИЗ ====================
 
-def mark_exact_duplicates(archives: list[Archive]) -> None:
+def _unchanged_since_scan(a: Archive) -> bool:
+    try:
+        st = a.path.stat()
+    except OSError:
+        return False
+    return st.st_size == a.size and st.st_mtime_ns == a.mtime_ns
+
+
+def mark_exact_duplicates(archives: list[Archive], hash_cache: Optional[HashCache] = None) -> None:
     """Точные копии: одинаковые размер и SHA-256, независимо от имён файлов.
 
     Хешируются только файлы, у которых есть «ровесник» по размеру.
     Файлы из Vortex никогда не становятся кандидатами на удаление.
+    С hash_cache файл с прежними размером и временем изменения заново не читается.
+    Перед очисткой SHA-256 всё равно пересчитывается по самому файлу (verify_entry).
     """
     by_size: dict[int, list[Archive]] = defaultdict(list)
     for a in archives:
         if a.size > 0:
             by_size[a.size].append(a)
     suspects = [a for group in by_size.values() if len(group) > 1 for a in group]
-    if suspects:
-        total = sum(a.size for a in suspects) / 1024 ** 3
+
+    to_hash: list[Archive] = []
+    for a in suspects:
+        cached = hash_cache.get(a.path, a.size, a.mtime_ns) if hash_cache and a.mtime_ns else None
+        if cached is not None:
+            a.sha256 = cached["sha256"]
+        else:
+            to_hash.append(a)
+    if suspects and hash_cache is not None:
+        log.info("[*] Файлов с одинаковым размером: %d, хеш взят из кэша для %d",
+                 len(suspects), len(suspects) - len(to_hash))
+    if to_hash:
+        total = sum(a.size for a in to_hash) / 1024 ** 3
         log.info("[*] Считаю SHA-256 для %d файлов с одинаковым размером (%.1f ГБ)...",
-                 len(suspects), total)
-    for n, a in enumerate(suspects, 1):
+                 len(to_hash), total)
+    for n, a in enumerate(to_hash, 1):
         try:
-            a.sha256 = sha256_file(a.path)
+            a.sha256, md5 = file_digests(a.path)
         except OSError as exc:
             log.warning("Не удалось прочитать %s: %s", a.path, exc)
             continue
+        # Если файл менялся, пока его читали, хеш к прежним размеру и времени не привязываем.
+        if hash_cache is not None and a.mtime_ns and _unchanged_since_scan(a):
+            hash_cache.put(a.path, a.size, a.mtime_ns, a.sha256, md5)
         if n % 20 == 0:
-            log.info("    %d / %d", n, len(suspects))
+            log.info("    %d / %d", n, len(to_hash))
+            if hash_cache is not None:
+                hash_cache.save()   # долгий подсчёт не пропадёт, если запуск прервут
 
     clusters: dict[tuple[int, str], list[Archive]] = defaultdict(list)
     for a in suspects:
@@ -1347,7 +1388,9 @@ def apply_ai_budgets(settings: "Settings", args: argparse.Namespace, announce: b
         return ""
 
     def source(name: str) -> str:
-        return f"config.json: ai.{name}" if name in ai_cfg else "по умолчанию"
+        if name in ai_cfg:
+            return f"config.json: ai.{name}"
+        return "по умолчанию равен суточному" if name == "per_run_budget" else "по умолчанию"
 
     shared = ("Лимит общий для распознавания названий и анализа страниц Nexus; "
               "переключение на запасную модель тоже считается запросом.")
@@ -2008,7 +2051,7 @@ def _scan_archive_roots(
     return archives, scanned_folders
 
 
-def _prepare_scan_archives(archives: list[Archive]) -> None:
+def _prepare_scan_archives(archives: list[Archive], hash_cache: Optional[HashCache] = None) -> None:
     rejected = [a for a in archives if a.meta.rejected_id is not None]
     if rejected:
         log.info("[!] Отброшено ложных Mod ID (вне 1–%d): %d архивов — ссылки на них только через поиск/ИИ",
@@ -2016,7 +2059,7 @@ def _prepare_scan_archives(archives: list[Archive]) -> None:
         for a in rejected[:10]:
             log.info("    %s  (число %d)", a.name, a.meta.rejected_id)
 
-    mark_exact_duplicates(archives)
+    mark_exact_duplicates(archives, hash_cache)
     mark_versions(archives)
 
 
@@ -2053,6 +2096,16 @@ def _load_scan_nexus_data(
     return installation_notes, nexus_records
 
 
+MAX_AI_ROUNDS = 100   # предохранитель от бесконечного цикла; обычно раунды кончаются раньше
+
+
+def _ai_round_state(ai_map: dict, nexus_records: dict) -> tuple[int, int, int, int]:
+    """Снимок прогресса ИИ: если после раунда он не изменился, работы больше нет."""
+    analyzed = sum(1 for record in nexus_records.values()
+                   if getattr(record, "recommendation", None) is not None)
+    return requests_used_this_run(), len(ai_map), len(nexus_records), analyzed
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     try:
         s = load_settings(args)
@@ -2069,22 +2122,52 @@ def cmd_scan(args: argparse.Namespace) -> int:
         log.error("Не найдена ни одна папка для сканирования. Проверьте downloads/vortex в config.json.")
         return 2
 
-    _prepare_scan_archives(archives)
+    hash_cache = HashCache.load(HASH_CACHE_PATH)
+    _prepare_scan_archives(archives, hash_cache)
+    scanned_roots = [os.path.realpath(folder) for folder in (s.downloads, s.vortex)
+                     if folder is not None and folder.is_dir()]
+    hash_cache.prune(scanned_roots, [a.path for a in archives])
+    hash_cache.save()
     blacklist = load_blacklist()
-    rows = build_rows(archives, blacklist)
+    base_rows = build_rows(archives, blacklist)
     core = check_game_core(s.game)
     game_mods = scan_game_mods(s.game)
     log.info("[*] Найдено элементов в известных папках модов игры: %d", len(game_mods))
     # Без AI-флагов подтягивается только кэш (ai_cache.json), сеть не используется.
     ai_online = bool(args.ai or args.ai_all or args.ai_auto)
-    budget_note = apply_ai_budgets(s, args, announce=ai_online or args.nexus_analyze)
+    ai_requested = ai_online or bool(args.nexus_analyze)
+    budget_note = apply_ai_budgets(s, args, announce=ai_requested)
     if budget_note:
         log.info(budget_note)
-    ai_map = run_ai(rows, s, args, online=ai_online)
-    # Английские названия от ИИ тоже сверяются со словарём; при совпадении строки пересобираются.
-    rows = _apply_ai_known_ids(archives, blacklist, rows, ai_map)
-
-    installation_notes, nexus_records = _load_scan_nexus_data(rows, s, args)
+    # Один раунд — то же, что раньше делал один запуск: пачки названий и анализ страниц Nexus.
+    # С --ai-until-budget раунды повторяются в этом же процессе, без нового обхода дисков.
+    # Без ключа OpenRouter запросов не будет, поэтому хватит одного раунда.
+    until_budget = (bool(getattr(args, "ai_until_budget", False)) and ai_requested
+                    and bool(resolve_openrouter(s, args)[0]))
+    round_no = 0
+    while True:
+        round_no += 1
+        ai_map = run_ai(base_rows, s, args, online=ai_online)
+        # Английские названия от ИИ тоже сверяются со словарём; при совпадении строки пересобираются.
+        rows = _apply_ai_known_ids(archives, blacklist, base_rows, ai_map)
+        installation_notes, nexus_records = _load_scan_nexus_data(rows, s, args)
+        if not until_budget:
+            break
+        state = _ai_round_state(ai_map, nexus_records)
+        if round_no > 1 and state == previous_state:
+            log.info("[*] ИИ: новой работы нет, раундов выполнено: %d", round_no)
+            break
+        previous_state = state
+        if round_no >= MAX_AI_ROUNDS:
+            log.info("[*] ИИ: достигнут предел раундов за запуск (%d)", MAX_AI_ROUNDS)
+            break
+        remaining = remaining_daily_requests()
+        if not remaining:   # 0 — лимит исчерпан, None — счётчик не читается
+            log.info("[*] ИИ: суточный лимит запросов исчерпан или недоступен, раундов выполнено: %d",
+                     round_no)
+            break
+        log.info("[*] ИИ: раунд %d завершён, осталось запросов на сегодня: %d. Следующий раунд…",
+                 round_no, remaining)
 
     s.out.parent.mkdir(parents=True, exist_ok=True)
     s.out.write_text(
@@ -2342,12 +2425,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--ai-refresh", action="store_true", help="игнорировать кэш ИИ и спросить заново")
     p_scan.add_argument("--ai-model", help="id модели OpenRouter (по умолчанию — бесплатные NVIDIA Nemotron)")
     p_scan.add_argument("--ai-max-requests", type=nonnegative_int, default=None,
-                        help="максимум пачек распознавания названий за запуск; важнее ai.max_requests "
+                        help="максимум пачек распознавания названий за раунд; важнее ai.max_requests "
                              f"из config.json (по умолчанию {AI_DEFAULT_MAX_REQUESTS}). Запросов к OpenRouter "
-                             "всё равно не больше ai.per_run_budget за запуск "
-                             f"(по умолчанию {PER_RUN_REQUEST_BUDGET}) и ai.daily_budget за UTC-сутки "
-                             f"(по умолчанию {DAILY_REQUEST_BUDGET}); эти лимиты общие с --nexus-analyze, "
+                             "всё равно не больше ai.daily_budget за UTC-сутки "
+                             f"(по умолчанию {DAILY_REQUEST_BUDGET}) и ai.per_run_budget за запуск "
+                             "(по умолчанию равен суточному); эти лимиты общие с --nexus-analyze, "
                              "а переключение на запасную модель тоже тратит запрос")
+    p_scan.add_argument("--ai-until-budget", action="store_true",
+                        help="повторять раунды ИИ (названия и анализ страниц Nexus) в одном запуске, "
+                             "пока не кончится лимит запросов или работа; --ai-max-requests, "
+                             "--nexus-ai-max-mods и --nexus-max-requests задают размер одного раунда. "
+                             "Папки сканируются и отчёт создаётся один раз")
     p_scan.add_argument("--nexus-details", action="store_true",
                         help="получить с Nexus подсказки автора по установке (опционально, без ключа API)")
     p_scan.add_argument("--nexus-max-requests", type=nonnegative_int, default=20,

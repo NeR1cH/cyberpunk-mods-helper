@@ -86,6 +86,7 @@ class GroupingTests(unittest.TestCase):
             with (
                 patch("nexus_links.load_settings", return_value=settings),
                 patch("nexus_links._scan_archive_roots", return_value=([mod_archive], 1)),
+                patch("nexus_links.HASH_CACHE_PATH", root / "mod_cache.json"),
                 patch("nexus_links.load_blacklist", return_value={}),
                 patch("nexus_links.check_game_core", return_value={}),
                 patch("nexus_links.scan_game_mods", return_value=[]),
@@ -556,6 +557,7 @@ class GroupingTests(unittest.TestCase):
             )
             with (
                 patch("nexus_links.load_settings", return_value=settings),
+                patch("nexus_links.HASH_CACHE_PATH", root / "mod_cache.json"),
                 patch("nexus_links.load_blacklist", return_value={}),
                 patch("nexus_links.check_game_core", return_value={}),
                 patch("nexus_links.scan_game_mods", return_value=[]),

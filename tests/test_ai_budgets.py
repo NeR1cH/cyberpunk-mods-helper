@@ -32,18 +32,18 @@ class BudgetTestCase(unittest.TestCase):
 
 
 class BudgetConfigTests(BudgetTestCase):
-    def test_defaults_are_the_previous_hard_coded_values(self) -> None:
-        self.assertEqual(openrouter_limits.current_budgets(), (10, 2))
+    def test_default_per_run_budget_equals_the_daily_budget(self) -> None:
+        self.assertEqual(openrouter_limits.current_budgets(), (10, 10))
         for ai_cfg in (None, {}, "broken"):
             with self.subTest(ai_cfg=ai_cfg):
-                self.assertEqual(openrouter_limits.budgets_from_config(ai_cfg), (10, 2))
+                self.assertEqual(openrouter_limits.budgets_from_config(ai_cfg), (10, 10))
 
     def test_valid_budgets_are_read_from_the_ai_section(self) -> None:
         self.assertEqual(
             openrouter_limits.budgets_from_config({"daily_budget": 30, "per_run_budget": 6}),
             (30, 6),
         )
-        self.assertEqual(openrouter_limits.budgets_from_config({"daily_budget": 0}), (0, 2))
+        self.assertEqual(openrouter_limits.budgets_from_config({"daily_budget": 0}), (0, 0))
 
     def test_invalid_budgets_fall_back_to_defaults_with_a_warning(self) -> None:
         for name in ("daily_budget", "per_run_budget"):
@@ -51,7 +51,7 @@ class BudgetConfigTests(BudgetTestCase):
                 with self.subTest(name=name, value=bad):
                     with self.assertLogs("modaudit", level="WARNING") as captured:
                         result = openrouter_limits.budgets_from_config({name: bad})
-                    self.assertEqual(result, (10, 2))
+                    self.assertEqual(result, (10, 10))
                     self.assertTrue(any(f"ai.{name}" in line for line in captured.output))
 
     def test_configured_budgets_drive_reservation_and_reporting(self) -> None:
@@ -65,7 +65,7 @@ class BudgetConfigTests(BudgetTestCase):
         self.assertEqual(openrouter_limits.remaining_daily_requests(self.usage), 1)
 
         openrouter_limits.configure_budgets()
-        self.assertEqual(openrouter_limits.current_budgets(), (10, 2))
+        self.assertEqual(openrouter_limits.current_budgets(), (10, 10))
 
     def test_daily_budget_stops_requests_before_the_per_run_budget(self) -> None:
         openrouter_limits.configure_budgets(daily=1, per_run=5)
@@ -123,9 +123,9 @@ class BudgetAnnouncementTests(BudgetTestCase):
     def test_announcement_names_the_real_cap_and_where_it_comes_from(self) -> None:
         text = self.announce({"api_key": "key"})
 
-        self.assertEqual(openrouter_limits.current_budgets(), (10, 2))
-        self.assertIn("не более 2 запросов", text)
-        self.assertIn("лимит за запуск 2 (по умолчанию)", text)
+        self.assertEqual(openrouter_limits.current_budgets(), (10, 10))
+        self.assertIn("не более 10 запросов", text)
+        self.assertIn("лимит за запуск 10 (по умолчанию равен суточному)", text)
         self.assertIn("на сегодня осталось 10 из 10 (по умолчанию)", text)
 
     def test_config_values_are_applied_and_attributed_to_config(self) -> None:
@@ -167,7 +167,7 @@ class BudgetAnnouncementTests(BudgetTestCase):
             text = self.announce({"api_key": "key"})
 
         self.assertIn("счётчик", text)
-        self.assertNotIn("не более 2 запросов", text)
+        self.assertNotIn("не более", text)
 
 
 class HonestHelpTests(unittest.TestCase):
